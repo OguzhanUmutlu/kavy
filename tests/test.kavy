@@ -1,0 +1,9 @@
+function f(myVar) {
+  for(let i = 0; i < myVar; i++) {
+    printS("hi\n");
+  }
+}
+
+f(5);
+
+exit(1);

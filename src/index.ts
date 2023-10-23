@@ -1,6 +1,12 @@
-import * as process from "node:process";
-import chalk from "chalk";
-import * as fs from "fs";
+const fs = require("fs");
+const {argv, exit} = require("process");
+const child_process = require("child_process");
+
+const Color = {
+    reset: (text: string) => `\x1B[0m${text}\x1B[0m`,
+    red: (text: string) => `\x1B[31m${text}\x1B[39m`,
+    blue: (text: string) => `\x1B[34m${text}\x1B[39m`,
+};
 
 enum TokenType {
     _, // So that tokens start with the ID of 1
@@ -59,13 +65,12 @@ enum ExpressionTypes {
 type Token = {
     type: TokenType,
     index: number,
-    value?: string
+    value: string
 };
 
 type Expression = DefineIntExpression | DefineFloatExpression | CallExpression |
     DefineArrayExpression | GetIndexExpression | SetIndexExpression | ParentExpression;
 type AnyExpression = ParentExpression | Expression | Token;
-type AnyNonTokenExpression = ParentExpression | Expression;
 type DefineIntExpression = {
     type: ExpressionTypes.DEFINE_INT,
     token: Token,
@@ -197,7 +202,7 @@ type ScopeInfo = {
 
 let runtimeId = 0;
 
-const TokenLookup = {
+const TokenLookup: Record<string, TokenType> = {
     "=": TokenType.SET,
     "!": TokenType.NOT,
     "~": TokenType.NOT,
@@ -217,11 +222,12 @@ const TokenLookup = {
     "{": TokenType.CURLY_BRACKET_OPEN,
     "}": TokenType.CURLY_BRACKET_CLOSE,
     "\n": TokenType.LINE_BREAK,
+    "\r": TokenType.LINE_BREAK,
     ";": TokenType.SEMICOLON,
     ",": TokenType.COMMA,
 };
 
-const EqualsTokenLookup = {
+const EqualsTokenLookup: Record<number, TokenType> = {
     [TokenType.PLUS]: TokenType.SET_ADD,
     [TokenType.MINUS]: TokenType.SET_SUBTRACT,
     [TokenType.MULTIPLY]: TokenType.SET_MULTIPLY,
@@ -233,7 +239,7 @@ const EqualsTokenLookup = {
 };
 
 // 0.08ms for TokenOtherLookup
-const TokenOtherLookup = {};
+const TokenOtherLookup: Record<string, TokenType> = {};
 const __Place_a = "a".charCodeAt(0);
 const __Place_z = "z".charCodeAt(0);
 const __Place_A = "A".charCodeAt(0);
@@ -248,7 +254,14 @@ const BracketLookup = {
     [TokenType.CURLY_BRACKET_OPEN]: TokenType.CURLY_BRACKET_CLOSE,
 };
 
-function throwError(code: string, t: Token | AnyExpression, error: string) {
+/**
+ * @param code
+ * @param t
+ * @param type
+ * @param error
+ * @throws Error
+ */
+function throwError(code: string, t: Token | AnyExpression, type: "SyntaxError" | "InternalError", error: string) {
     const token = "token" in t ? t.token : t;
     const lines = code.split("\n");
     let line = 0;
@@ -265,17 +278,17 @@ function throwError(code: string, t: Token | AnyExpression, error: string) {
         const l = line + i;
         if (!(l in lines)) continue;
         if (i === 0) {
-            console.error(chalk.red("> ") + chalk.blue((l + 1) + " | " + lines[l].substring(0, key - 1) + chalk.red(lines[l].substring(key - 1, key - 1 + L) ?? "") + lines[l].substring(key - 1 + L)));
-            console.error(" ".repeat(key + 5) + chalk.red("^".repeat(L)));
+            console.error(Color.red("> ") + Color.blue((l + 1) + " | " + lines[l].substring(0, key - 1) + Color.red(lines[l].substring(key - 1, key - 1 + L) ?? "") + lines[l].substring(key - 1 + L)));
+            console.error(" ".repeat(key + 5) + Color.red("^".repeat(L)));
         } else {
-            console.error(chalk.blue("  " + (l + 1) + " | " + lines[l]));
+            console.error(Color.blue("  " + (l + 1) + " | " + lines[l]));
         }
     }
-    console.error("\n" + chalk.red(error));
-    process.exit(1);
+    console.error("\n" + Color.red(error));
+    exit(1);
 }
 
-function tokenize(code: string) {
+function tokenize(code: string): Token[] {
     const tokens: Token[] = [];
     let openNot = false;
     for (let i = 0; i < code.length; i++) {
@@ -331,8 +344,12 @@ function tokenize(code: string) {
                     {type: TokenType.PARENTHESES_OPEN, index: i, value: "("}
                 );
             } else if (openNot) {
-                throwError(code, {type: 0, index: i}, "Expected a non-symbolic expression after not symbol.");
-                return null;
+                throwError(code, {
+                    type: 0,
+                    index: i,
+                    value: " "
+                }, "SyntaxError", "Expected a non-symbolic expression after not symbol.");
+                return tokens;
             }
             if (last && last.type === look && (look === TokenType.PLUS || look === TokenType.MINUS)) {
                 tokens.splice(tokens.length - 1, 1);
@@ -350,7 +367,7 @@ function tokenize(code: string) {
                 );
                 continue;
             }
-            tokens.push({type: look, value: char, index: i}); // todo: remove value from here
+            tokens.push({type: look, value: char, index: i});
             continue;
         }
         if (char === '"' || char === "'") {
@@ -360,16 +377,17 @@ function tokenize(code: string) {
             while (true) {
                 i++;
                 if (i === code.length) {
-                    throwError(code, {type: 0, index: sI}, "SyntaxError: Expected the string to end.");
-                    return null;
+                    throwError(code, {type: 0, index: sI, value: " "}, "SyntaxError", "Expected the string to end.");
+                    return tokens;
                 }
                 const c2 = code[i];
                 if (c2 === "\n") {
                     throwError(code, {
                         type: 0,
-                        index: i
-                    }, "SyntaxError: Expected (" + char + ") instead got a line break.");
-                    return null;
+                        index: i,
+                        value: " "
+                    }, "SyntaxError", "Expected (" + char + ") instead got a line break.");
+                    return tokens;
                 }
                 if (c2 === char && !backslash) {
                     break;
@@ -379,16 +397,20 @@ function tokenize(code: string) {
                 acc += c2;
             }
             if (openNot) {
-                throwError(code, {type: 0, index: sI}, "SyntaxError: Cannot use the not symbol on a string literal.");
-                return null;
+                throwError(code, {
+                    type: 0,
+                    index: sI,
+                    value: " "
+                }, "SyntaxError", "Cannot use the not symbol on a string literal.");
+                return tokens;
             }
             tokens.push({type: TokenType.STRING, index: sI, value: char + acc + char});
             continue;
         }
         const otherLook = TokenOtherLookup[char];
         if (!otherLook) {
-            throwError(code, {type: 0, index: i}, "SyntaxError: Undefined token " + chalk.yellow("'" + char + "'"));
-            return null;
+            throwError(code, {type: 0, index: i, value: " "}, "SyntaxError", "Undefined token '" + char + "'");
+            return tokens;
         }
         let acc = char;
         const sI = i;
@@ -413,25 +435,24 @@ function tokenize(code: string) {
         if (!last) continue;
         if (last.type === TokenType.MULTIPLY || last.type === TokenType.DIVIDE) {
             const last3 = tokens[tokens.length - 3];
-            const p = [];
             let nd = tokens.length - 3;
             if (last3.type === TokenType.PARENTHESES_CLOSE) {
                 nd = tokens.length - 1;
             }
-            tokens.splice(nd, 0, ...p, {
+            tokens.splice(nd, 0, {
                 type: TokenType.PARENTHESES_OPEN, index: tokens[nd].index, value: "("
             });
             tokens.push({type: TokenType.PARENTHESES_CLOSE, index: sI, value: ")"});
         }
     }
     if (openNot) {
-        throwError(code, tokens[tokens.length - 1], "SyntaxError: The not symbol wasn't completed.");
+        throwError(code, tokens[tokens.length - 1], "SyntaxError", "The not symbol wasn't completed.");
     }
     return tokens;
 }
 
-function group(code: string, tokens: Token[]): ParentExpression & { deepness: number } {
-    const groups = {parent: null, end: null, token: null, children: []};
+function group(code: string, tokens: Token[]): (ParentExpression & { deepness: number }) {
+    const groups: any = {parent: null, end: null, token: null, children: []};
     let parent = groups;
     let deepness = 1;
     let maxDeepness = 1;
@@ -457,12 +478,17 @@ function group(code: string, tokens: Token[]): ParentExpression & { deepness: nu
         parent.children.push(token);
     }
     if (parent !== groups) {
-        throwError(code, parent.token, "SyntaxError: The bracket was never closed.");
-        return null;
+        throwError(code, parent.token, "SyntaxError", "The bracket was never closed.");
+        return {
+            type: ExpressionTypes.PARENT,
+            children: [],
+            deepness: -1,
+            token: {type: TokenType._, index: 0, value: " "}
+        };
     }
     return {
         type: ExpressionTypes.PARENT,
-        token: {type: TokenType.LINE_BREAK, index: 0},
+        token: {type: TokenType.LINE_BREAK, index: 0, value: " "},
         children: groups.children,
         deepness: maxDeepness
     };
@@ -475,7 +501,8 @@ function nextUntilSemicolon(groups: ParentExpression, index: number, code: strin
         if (group.type !== ExpressionTypes.PARENT && group.type === TokenType.SEMICOLON) return [list, i];
         list.push(group);
     }
-    throwError(code, <Token>groups.children[index], "SyntaxError: Expected a semicolon after the expression.");
+    throwError(code, <Token>groups.children[index], "SyntaxError", "Expected a semicolon after the expression.");
+    return [list, groups.children.length];
 }
 
 function findVariable(info: ScopeInfo, name: string): { parent: ScopeInfo, value: VariableHolder } | null {
@@ -498,14 +525,14 @@ function findFunction(info: ScopeInfo, name: string): { parent: ScopeInfo, value
 
 function splitTokensWithComma(group: AnyExpression[], code: string, split = TokenType.COMMA): AnyExpression[][] {
     if (group.length === 0) return [];
-    const list = [[]];
+    const list: AnyExpression[][] = [[]];
     for (let i = 0; i < group.length; i++) {
         const current = group[i];
         if (current.type === split) {
             list.push([]);
             if (split === TokenType.COMMA && i === group.length - 1) {
-                throwError(code, current, "SyntaxError: Expected an expression after the comma.");
-                return null;
+                throwError(code, current, "SyntaxError", "Expected an expression after the comma.");
+                return list;
             }
             continue;
         }
@@ -522,7 +549,7 @@ const SetOperations: number[] = [
     TokenType.SET_DIVIDE,
 ];
 
-const SetOperatorLookup = {
+const SetOperatorLookup: Record<number, number> = {
     [TokenType.SET_ADD]: TokenType.PLUS,
     [TokenType.SET_SUBTRACT]: TokenType.MINUS,
     [TokenType.SET_MULTIPLY]: TokenType.MULTIPLY,
@@ -534,16 +561,12 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
     const scopeInfo: ScopeInfo = {
         parent: parent,
         groups,
-        variables: useParentScopeVariables ? parent.variables : {},
-        functions: useParentScopeVariables ? parent.functions : {},
+        variables: useParentScopeVariables && parent ? parent.variables : {},
+        functions: useParentScopeVariables && parent ? parent.functions : {},
         statements
     };
     for (let i = 0; i < groups.children.length; i++) {
         const group = groups.children[i];
-        if (group.type === ExpressionTypes.PARENT) {
-            // todo
-            continue;
-        }
         if (group.type === TokenType.LINE_BREAK) continue;
         if (group.type === TokenType.SEMICOLON) continue;
         if (ignoreLiterals) {
@@ -570,24 +593,25 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             }
             if (group.value === "let" || group.value === "const") {
                 const name = groups.children[++i];
-                if (!name || name.type === ExpressionTypes.PARENT || name.type !== TokenType.WORD) {
-                    throwError(code, group, "SyntaxError: Expected a valid variable name.");
-                    return null;
+                if (!name || name.type !== TokenType.WORD) {
+                    throwError(code, group, "SyntaxError", "Expected a valid variable name.");
+                    return scopeInfo;
                 }
                 const equals = groups.children[++i];
                 if (!equals || equals.type === ExpressionTypes.PARENT || equals.type !== TokenType.SET) {
                     throwError(code, {
                         type: 0,
-                        index: name.index + name.value.length
-                    }, "SyntaxError: Expected '='");
-                    return null;
+                        index: name.index + name.value.length,
+                        value: " "
+                    }, "SyntaxError", "Expected '='");
+                    return scopeInfo;
                 }
                 const [value, nI3] = nextUntilSemicolon(groups, i + 1, code);
                 i = nI3;
                 const existing = scopeInfo.variables[name.value];
                 if (existing) {
-                    throwError(code, group, "SyntaxError: Cannot redeclare a variable: '" + name.value + "'.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Cannot redeclare a variable: '" + name.value + "'.");
+                    return scopeInfo;
                 }
                 allVariables.push(scopeInfo.variables[name.value] = {
                     type: VariableType.INT,
@@ -611,32 +635,33 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             if (group.value === "function") {
                 const name = groups.children[++i];
                 if (!name || name.type === ExpressionTypes.PARENT || name.type !== TokenType.WORD) {
-                    throwError(code, group, "SyntaxError: Expected a valid function name.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a valid function name.");
+                    return scopeInfo;
                 }
                 const argumentList = groups.children[++i];
                 if (!argumentList || argumentList.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected an argument list for the function statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected an argument list for the function statement.");
+                    return scopeInfo;
                 }
                 const scope = groups.children[++i];
                 if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a scope for the function statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a scope for the function statement.");
+                    return scopeInfo;
                 }
                 const vars: VariableHolder[] = [];
+                const varObj: Record<string, VariableHolder> = {};
                 for (let i = 0; i < argumentList.children.length; i += 2) {
-                    const argName = argumentList.children[i];
+                    const argName: AnyExpression = argumentList.children[i];
                     const comma = argumentList.children[i + 1];
                     if ("token" in argName) {
-                        throwError(code, argName, "Expected argument of a function to be a valid variable name.");
-                        return null;
+                        throwError(code, argName, "SyntaxError", "Expected argument of a function to be a valid variable name.");
+                        return scopeInfo;
                     }
                     if (i !== argumentList.children.length - 1 && (!comma || comma.type !== TokenType.COMMA)) {
-                        throwError(code, comma, "Expected a comma.");
-                        return null;
+                        throwError(code, comma, "SyntaxError", "Expected a comma.");
+                        return scopeInfo;
                     }
-                    const variable = scopeInfo.variables[argName.value] = {
+                    const variable = {
                         type: VariableType.INT,
                         name: argName.value,
                         const: false,
@@ -644,16 +669,25 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
                     };
                     allVariables.push(variable);
                     vars.push(variable);
+                    if (argName.value in varObj) {
+                        throwError(code, argName, "SyntaxError", "Function's argument names should be unique.");
+                    }
+                    varObj[argName.value] = variable;
                 }
                 const statement: FunctionStatement = {
                     type: ExpressionTypes.FUNCTION,
                     token: group,
                     name,
                     arguments: vars,
-                    scope: ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables, true)
+                    scope: ast(code, scope, {
+                        parent: scopeInfo,
+                        variables: varObj, functions: {}, statements: [], groups: {
+                            type: ExpressionTypes.PARENT, token: group, children: []
+                        }
+                    }, ignoreLiterals, allStatements, allVariables, true)
                 };
                 if (scopeInfo.functions[name.value]) {
-                    throwError(code, group, "The function named '" + name.value + "' is already defined in the scope.");
+                    throwError(code, group, "SyntaxError", "The function named '" + name.value + "' is already defined in the scope.");
                 }
                 scopeInfo.functions[name.value] = {
                     name: name.value,
@@ -667,17 +701,17 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             if (group.value === "if") {
                 const requirement = groups.children[++i];
                 if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a requirement for the if statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a requirement for the if statement.");
+                    return scopeInfo;
                 }
                 if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError: Expected the requirement of the if statement to not be empty.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected the requirement of the if statement to not be empty.");
+                    return scopeInfo;
                 }
                 const scope = groups.children[++i];
                 if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a scope for the if statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a scope for the if statement.");
+                    return scopeInfo;
                 }
                 const statement: IfStatement = {
                     type: ExpressionTypes.IF,
@@ -695,41 +729,41 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             if (group.value === "else") {
                 const lastStatement = <IfStatement>statements[statements.length - 1];
                 if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
-                    throwError(code, group, "SyntaxError: Unexpected else statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Unexpected else statement.");
+                    return scopeInfo;
                 }
                 const next = groups.children[++i];
                 if (next && next.type === ExpressionTypes.PARENT) {
                     // } else {
                     if (lastStatement.else) {
-                        throwError(code, group, "SyntaxError: Else statement's bounding if statement already has an else statement.");
-                        return null;
+                        throwError(code, group, "SyntaxError", "Else statement's bounding if statement already has an else statement.");
+                        return scopeInfo;
                     }
                     lastStatement.else = ast(code, next, scopeInfo, ignoreLiterals, allStatements, allVariables, true);
                     continue;
                 }
                 if (!next || next.type !== TokenType.WORD) {
-                    throwError(code, group, "SyntaxError: Expected 'if'");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected 'if'");
+                    return scopeInfo;
                 }
                 // } else if() {
                 if (next.value !== "if") {
-                    throwError(code, group, "SyntaxError: Expected the 'if' keyword.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected the 'if' keyword.");
+                    return scopeInfo;
                 }
                 const requirement = groups.children[++i];
                 if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a requirement for the else-if statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a requirement for the else-if statement.");
+                    return scopeInfo;
                 }
                 if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError: Expected the requirement of the else-if statement to not be empty.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
+                    return scopeInfo;
                 }
                 const scope = groups.children[++i];
                 if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a scope for the else-if statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
+                    return scopeInfo;
                 }
                 lastStatement.else = {
                     statements: [{
@@ -744,22 +778,22 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             if (group.value === "elseif") {
                 const lastStatement = <IfStatement>statements[statements.length - 1];
                 if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
-                    throwError(code, group, "SyntaxError: Unexpected else-if statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Unexpected else-if statement.");
+                    return scopeInfo;
                 }
                 const requirement = groups.children[++i];
                 if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a requirement for the else-if statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a requirement for the else-if statement.");
+                    return scopeInfo;
                 }
                 if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError: Expected the requirement of the else-if statement to not be empty.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
+                    return scopeInfo;
                 }
                 const scope = groups.children[++i];
                 if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a scope for the else-if statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
+                    return scopeInfo;
                 }
                 lastStatement.else = {
                     statements: [{
@@ -774,8 +808,8 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             if (group.value === "loop") {
                 const scope = groups.children[++i];
                 if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a scope for the loop statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a scope for the loop statement.");
+                    return scopeInfo;
                 }
                 const statement: LoopStatement = {
                     type: ExpressionTypes.LOOP,
@@ -789,17 +823,17 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             if (group.value === "while") {
                 const requirement = groups.children[++i];
                 if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a requirement for the while statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a requirement for the while statement.");
+                    return scopeInfo;
                 }
                 if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError: Expected the requirement of the while statement to not be empty.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
+                    return scopeInfo;
                 }
                 const scope = groups.children[++i];
                 if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a scope for the while statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
+                    return scopeInfo;
                 }
                 const scopeAst = ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables);
 
@@ -828,21 +862,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             if (group.value === "for") {
                 const requirement = groups.children[++i];
                 if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a requirement for the while statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a requirement for the while statement.");
+                    return scopeInfo;
                 }
                 if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError: Expected the requirement of the while statement to not be empty.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
+                    return scopeInfo;
                 }
                 const scope = groups.children[++i];
                 if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError: Expected a scope for the while statement.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
+                    return scopeInfo;
                 }
                 const split = splitTokensWithComma(requirement.children, code, TokenType.SEMICOLON);
                 if (split.length !== 3) {
-                    throwError(code, group, "Expected one initial statement, one requirement and one step statement for the for-loop statement.");
+                    throwError(code, group, "SyntaxError", "Expected one initial statement, one requirement and one step statement for the for-loop statement.");
                 }
                 const initialAst = ast(code, {
                     type: ExpressionTypes.PARENT,
@@ -855,7 +889,6 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
                     children: [...split[2], {type: TokenType.SEMICOLON, value: ";", index: group.index}]
                 }, scopeInfo, ignoreLiterals, allStatements, allVariables);
                 const scopeAst = ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables);
-                //console.log(initialAst, split[1], stepAst);
                 allStatements.push(...initialAst.statements);
                 statements.push(...initialAst.statements);
                 scopeAst.statements.splice(0, 0, {
@@ -887,7 +920,7 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
             }
             const next = groups.children[++i];
             if (!next) {
-                throwError(code, group, "SyntaxError: Unexpected ending.");
+                throwError(code, group, "SyntaxError", "Unexpected ending.");
                 continue;
             }
             if (SetOperations.includes(next.type)) {
@@ -895,12 +928,12 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
                 i = nI2;
                 const existing = findVariable(scopeInfo, group.value);
                 if (!existing) {
-                    throwError(code, group, "SyntaxError: Undefined variable: '" + group.value + "'.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Undefined variable: '" + group.value + "'.");
+                    return scopeInfo;
                 }
                 if (existing.value.const) {
-                    throwError(code, group, "SyntaxError: Cannot alter variables that are defined as constants.");
-                    return null;
+                    throwError(code, group, "SyntaxError", "Cannot alter variables that are defined as constants.");
+                    return scopeInfo;
                 }
                 if (next.type !== TokenType.SET) {
                     value.splice(
@@ -935,11 +968,11 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, i
                 continue;
             }
             continue;
-            /*throwError(code, group, "SyntaxError: Unexpected token: '" + group.value + "'");
-            return null;*/
+            /*throwError(code, group,"SyntaxError", "Unexpected token: '" + group.value + "'");
+            return scopeInfo;*/
         }
-        throwError(code, group, "SyntaxError: Unexpected token.");
-        return null;
+        throwError(code, group, "SyntaxError", "Unexpected token.");
+        return scopeInfo;
     }
     return scopeInfo;
 }
@@ -980,11 +1013,11 @@ function filterExpressionAssembly(code: string, group: AnyExpression[]) {
         const expression = group[i];
         if (ignoring.includes(expression.type) || ("token" in expression && expression.type !== ExpressionTypes.PARENT)) continue;
         if (!nonOperators.includes(expression.type) && !operators.includes(expression.type)) {
-            throwError(code, expression, "SyntaxError: Unexpected token inside an expression.");
+            throwError(code, expression, "SyntaxError", "Unexpected token inside an expression.");
         }
         const isOperator = operators.includes(expression.type);
         if ((ind % 2 === 1) !== isOperator) {
-            throwError(code, expression, "SyntaxError: Expected an " + (isOperator ? "expression" : "operator") + ", got an " + (isOperator ? "operator" : "expression") + ".");
+            throwError(code, expression, "SyntaxError", "Expected an " + (isOperator ? "expression" : "operator") + ", got an " + (isOperator ? "operator" : "expression") + ".");
         }
         let ps: Token | RecursiveTokens;
         if (expression.type === ExpressionTypes.PARENT) {
@@ -1022,7 +1055,8 @@ function assembleExpression(
             // variable
             const variable = findVariable(scope, first.value);
             if (!variable) {
-                throwError(code, first, "SyntaxError: Variable not defined: '" + first.value + "'");
+                throwError(code, first, "SyntaxError", "Variable not defined: '" + first.value + "'");
+                return [];
             }
             lastSection.push(
                 `mov eax, [_var${variable.value.id}]`,
@@ -1031,9 +1065,8 @@ function assembleExpression(
         }
     }
 
-    // todo: remove if there are things like: mov eax, [A] \n mov [A], eax  second line is useless.
     function normalOperatorLookup(expression: Token | RecursiveTokens) {
-        let el;
+        let el: string;
         if (Array.isArray(expression)) {
             lastSection = assembleExpression(code, expression, strings, scope, currentDeepness + 1, lastSection, sections);
             el = `[_temp${currentDeepness + 1}]`;
@@ -1042,16 +1075,20 @@ function assembleExpression(
                 expression.type !== TokenType.INT &&
                 expression.type !== TokenType.WORD
             ) {
-                throwError(code, expression, "SyntaxError: Expected an integer or a variable.");
+                throwError(code, expression, "SyntaxError", "Expected an integer or a variable.");
             }
             if (expression.type === TokenType.INT) {
                 el = expression.value;
             } else if (expression.type === TokenType.WORD) {
                 const variable = findVariable(scope, expression.value);
                 if (!variable) {
-                    throwError(code, expression, "SyntaxError: Variable not defined: '" + expression.value + "'");
+                    throwError(code, expression, "SyntaxError", "Variable not defined: '" + expression.value + "'");
+                    return "";
                 }
                 el = `[_var${variable.value.id}]`;
+            } else {
+                throwError(code, expression, "SyntaxError", "Unexpected token.");
+                return "";
             }
         }
         return el;
@@ -1082,8 +1119,8 @@ function assembleExpression(
         };
     }
 
-    const OperatorLookup = {
-        [TokenType.PLUS](expression: Token | RecursiveTokens) {
+    const OperatorLookup: Record<number, (expression: Token | RecursiveTokens) => void> = {
+        [TokenType.PLUS](expression) {
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1091,7 +1128,7 @@ function assembleExpression(
                 `mov [_temp${currentDeepness}], eax`
             );
         },
-        [TokenType.MINUS](expression: Token | RecursiveTokens) {
+        [TokenType.MINUS](expression) {
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1099,7 +1136,7 @@ function assembleExpression(
                 `mov [_temp${currentDeepness}], eax`
             );
         },
-        [TokenType.MULTIPLY](expression: Token | RecursiveTokens) {
+        [TokenType.MULTIPLY](expression) {
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1107,7 +1144,7 @@ function assembleExpression(
                 `mov [_temp${currentDeepness}], eax`
             );
         },
-        [TokenType.DIVIDE](expression: Token | RecursiveTokens) {
+        [TokenType.DIVIDE](expression) {
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1122,7 +1159,7 @@ function assembleExpression(
         [TokenType.SMALLER_EQUAL]: compareOperatorLookup("jg", "0", "1"),
         [TokenType.GREATER]: compareOperatorLookup("jg", "1", "0"),
         [TokenType.SMALLER]: compareOperatorLookup("jl", "1", "0"),
-        [TokenType.AND](expression: Token | RecursiveTokens) {
+        [TokenType.AND](expression) {
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1130,7 +1167,7 @@ function assembleExpression(
                 `mov [_temp${currentDeepness}], eax`
             );
         },
-        [TokenType.OR](expression: Token | RecursiveTokens) {
+        [TokenType.OR](expression) {
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1138,7 +1175,7 @@ function assembleExpression(
                 `mov [_temp${currentDeepness}], eax`
             );
         },
-        [TokenType.XOR](expression: Token | RecursiveTokens) {
+        [TokenType.XOR](expression) {
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1157,7 +1194,7 @@ function assembleExpression(
     return lastSection;
 }
 
-const escapes = {
+const escapes: Record<string, number> = {
     "n": 10,
     "t": 9,
     "b": 8,
@@ -1191,9 +1228,9 @@ function assemble(
     currentDeepness = 0,
     namedSections: Record<string, string[]>,
     lastSection: string[],
-    breakSection: string = null
+    breakSection: string | null = null
 ) {
-    const CallLookup = {
+    const CallLookup: Record<string, Function> = {
         exit(statement: CallExpression) {
             const filtered = filterExpressionAssembly(code, statement.arguments[0]);
             lastSection = assembleExpression(code, filtered, strings, scope, currentDeepness, lastSection, namedSections);
@@ -1228,28 +1265,28 @@ function assemble(
                 const arg = statement.arguments[i];
                 if (arg.length === 1 && arg[0].type === TokenType.STRING) {
                     if (arg[0].value.includes(":")) {
-                        throwError(code, statement.token, "The ':' character cannot be used in asm() function since it can cause corruption.");
+                        throwError(code, statement.token, "SyntaxError", "The ':' character cannot be used in asm() function since it can cause corruption.");
                     }
                     lastSection.push(
                         arg[0].value.slice(1, -1)
                     );
-                } else throwError(code, statement.token, "Expected a literal string for the asm() function.");
+                } else throwError(code, statement.token, "SyntaxError", "Expected a literal string for the asm() function.");
             }
         }
     };
-    const StatementLookup = {
+    const StatementLookup: Record<number, Function> = {
         [ExpressionTypes.CALL](statement: CallExpression) {
             const look = CallLookup[statement.name.value];
             if (look) return look(statement);
             const func = findFunction(scope, statement.name.value);
             if (!func) {
-                throwError(code, statement.token, "SyntaxError: Undefined function: '" + statement.name.value + "'");
+                throwError(code, statement.token, "SyntaxError", "Undefined function: '" + statement.name.value + "'");
                 return;
             }
             const givenArgs = statement.arguments;
             const args = func.value.definition.arguments;
             if (givenArgs.length !== args.length) {
-                throwError(code, statement.token, "SyntaxError: Expected " + args.length + " arguments, instead got " + givenArgs.length + ".");
+                throwError(code, statement.token, "SyntaxError", "Expected " + args.length + " arguments, instead got " + givenArgs.length + ".");
             }
             for (let i = 0; i < args.length; i++) {
                 const arg = args[i];
@@ -1284,11 +1321,11 @@ function assemble(
                 `je _i0${id}`,
                 `jmp _i1${id}`
             );
-            const continueSec = namedSections["_i2" + id] = [];
-            const ifSec = namedSections["_i1" + id] = [];
+            const continueSec: string[] = namedSections["_i2" + id] = [];
+            const ifSec: string[] = namedSections["_i1" + id] = [];
             lastSection = assemble(code, strings, statement.if.scope, tokens, statements, deepness, currentDeepness + 1, namedSections, ifSec, breakSection);
             lastSection.push(`jmp _i2${id}`);
-            const elseSec = namedSections["_i0" + id] = [];
+            const elseSec: string[] = namedSections["_i0" + id] = [];
             if (statement.else) {
                 lastSection = assemble(code, strings, statement.else, tokens, statements, deepness, currentDeepness + 1, namedSections, elseSec, breakSection);
                 lastSection.push(`jmp _i2${id}`);
@@ -1306,7 +1343,7 @@ function assemble(
         },
         [ExpressionTypes.BREAK](statement: BreakStatement) {
             if (!breakSection) {
-                throwError(code, statement.token, "SyntaxError: Break keyword can only be used inside loops.");
+                throwError(code, statement.token, "SyntaxError", "Break keyword can only be used inside loops.");
             }
             lastSection.push(`jmp ${breakSection}`);
         },
@@ -1314,27 +1351,27 @@ function assemble(
             const func = scope.functions[statement.name.value];
             if (!func) throw new Error("Assumption failed.");
             const fnSec = namedSections["_func" + func.id] = [];
-            const varObj = {};
+            const varObj: Record<string, VariableHolder> = {};
             const varL = func.definition.arguments;
             for (let i = 0; i < varL.length; i++) {
                 const v = varL[i];
                 varObj[v.name] = v;
             }
-            assemble(code, strings, {
+            const sec = assemble(code, strings, {
                 parent: statement.scope,
                 variables: varObj,
                 functions: {},
-                groups: {type: ExpressionTypes.PARENT, token: statement.token, children: []},
-                statements: []
+                statements: func.definition.scope.statements,
+                groups: func.definition.scope.groups
             }, tokens, statements, deepness, currentDeepness + 1, namedSections, fnSec, null);
-            fnSec.push(`ret`);
+            sec.push(`ret`);
         }
     };
     for (let i = 0; i < scope.statements.length; i++) {
         const statement = scope.statements[i];
         const look = StatementLookup[statement.type];
         if (!look) {
-            throwError(code, statement.token, "InternalError: Unhandled token type. ID: " + statement.type);
+            throwError(code, statement.token, "InternalError", "Unhandled token type. ID: " + statement.type);
         }
         look(statement);
     }
@@ -1344,10 +1381,7 @@ function assemble(
 function assemblyToString(
     namedSections: Record<string, string[]>,
     strings: Record<string, number>,
-    tokens: Token[],
-    statements: Statement[],
     variables: VariableHolder[],
-    scope: ScopeInfo,
     deepness: number
 ) {
     const sectionData = [];
@@ -1401,25 +1435,52 @@ function compile(code: string) {
     const tokens = tokenize(code);
     const groups = group(code, tokens);
     const deepness = groups.deepness;
-    const allStatements = [];
-    const allVariables = [];
+    const allStatements: Statement[] = [];
+    const allVariables: VariableHolder[] = [];
     const scope = ast(code, groups, null, true, allStatements, allVariables);
     const strings = getStrings(tokens);
     const namedSections = {_start: []};
     assemble(code, strings, scope, tokens, allStatements, deepness, 0, namedSections, namedSections._start);
-    const string = assemblyToString(namedSections, strings, tokens, allStatements, allVariables, scope, deepness);
-    const cleanAssembly = cleanJunkAssembly(string);
-    fs.writeFileSync("./out.asm", cleanAssembly);
+    const string = assemblyToString(namedSections, strings, allVariables, deepness);
+    return cleanJunkAssembly(string);
 }
 
-compile(`
-function a(myVar) {
-  for(let i = 0; i < myVar; i++) {
-    printS("hi\\n");
-  }
+function throwCliError(error: string) {
+    console.error(Color.red(error));
+    exit(1);
 }
 
-a(10);
-
-exit(1);
-`);
+if (require.main === module) {
+    const args: string[] = [];
+    const options: Record<string, string> = {};
+    for (let i = 2; i < argv.length; i++) {
+        let arg = argv[i];
+        if (arg.startsWith("-")) {
+            if (arg.startsWith("--")) arg = arg.slice(1);
+            options[arg.slice(1)] = " ";
+            continue;
+        }
+        args.push(arg);
+    }
+    let file = args[0];
+    if (!file) {
+        throwCliError("No input file was given.");
+    }
+    if (!fs.existsSync(file)) {
+        throwCliError("Input file not found: " + args[0]);
+    }
+    if (!fs.statSync(file).isFile()) {
+        throwCliError("Expected a file for the input, got a directory.");
+    }
+    const assembly = compile(fs.readFileSync(file, "utf8"));
+    const out = options.o ?? file.split(".").slice(0, -1).join(".") + ".asm";
+    if (fs.existsSync(out) && !fs.statSync(out).isFile()) {
+        throwCliError("Got an existing directory for the output.");
+    }
+    fs.writeFileSync(out, assembly);
+    if (options.b || options.build) {
+        const outO = out.slice(0, -3) + "o";
+        const outR = out.slice(0, -4);
+        child_process.execSync(`nasm -f elf ${out} -o ${outO} && ld -m elf_i386 -s -o ${outR} ${outO} && rm ${outO}`);
+    }
+}

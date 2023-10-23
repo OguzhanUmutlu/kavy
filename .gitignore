@@ -1,0 +1,9 @@
+.idea
+node_modules
+out
+out.o
+out.asm
+build
+tests/test
+tests/test.asm
+tests/kavy
