@@ -1,0 +1,1425 @@
+import * as process from "node:process";
+import chalk from "chalk";
+import * as fs from "fs";
+
+enum TokenType {
+    _, // So that tokens start with the ID of 1
+    INT,
+    FLOAT,
+    STRING,
+    SET,
+    NOT,
+    GREATER,
+    SMALLER,
+    GREATER_EQUAL,
+    SMALLER_EQUAL,
+    OR,
+    AND,
+    XOR,
+    PLUS,
+    MINUS,
+    MULTIPLY,
+    DIVIDE,
+    PARENTHESES_OPEN,
+    PARENTHESES_CLOSE,
+    SQUARE_BRACKET_OPEN,
+    SQUARE_BRACKET_CLOSE,
+    CURLY_BRACKET_OPEN,
+    CURLY_BRACKET_CLOSE,
+    LINE_BREAK,
+    SEMICOLON,
+    COMMA,
+    WORD,
+    SET_ADD,
+    SET_SUBTRACT,
+    SET_MULTIPLY,
+    SET_DIVIDE,
+    EQUALS,
+    NOT_EQUALS,
+}
+
+enum ExpressionTypes {
+    DEFINE_INT = 100,
+    DEFINE_ARRAY,
+    DEFINE_FLOAT,
+    GET_INDEX,
+    SET_INDEX,
+    CALL,
+    IF,
+    SWITCH,
+    LOOP,
+    WHILE,
+    FOR,
+    FUNCTION,
+    PARENT,
+    BREAK,
+    CONTINUE,
+}
+
+type Token = {
+    type: TokenType,
+    index: number,
+    value?: string
+};
+
+type Expression = DefineIntExpression | DefineFloatExpression | CallExpression |
+    DefineArrayExpression | GetIndexExpression | SetIndexExpression | ParentExpression;
+type AnyExpression = ParentExpression | Expression | Token;
+type AnyNonTokenExpression = ParentExpression | Expression;
+type DefineIntExpression = {
+    type: ExpressionTypes.DEFINE_INT,
+    token: Token,
+    name: Token,
+    value: AnyExpression[],
+    const: boolean,
+    new: boolean,
+    extra: any
+};
+type DefineFloatExpression = {
+    type: ExpressionTypes.DEFINE_FLOAT,
+    token: Token,
+    name: Token,
+    value: AnyExpression[],
+    const: boolean,
+    new: boolean,
+    extra: any
+};
+type DefineArrayExpression = {
+    type: ExpressionTypes.DEFINE_ARRAY,
+    token: Token,
+    name: Token,
+    value: AnyExpression[][],
+    const: boolean,
+    new: boolean,
+    extra: any
+};
+type GetIndexExpression = {
+    type: ExpressionTypes.GET_INDEX,
+    token: Token,
+    name: Token,
+    index: Token
+};
+type SetIndexExpression = {
+    type: ExpressionTypes.SET_INDEX,
+    token: Token,
+    name: Token,
+    index: Token,
+    value: AnyExpression[]
+};
+type CallExpression = {
+    type: ExpressionTypes.CALL,
+    token: Token,
+    name: Token,
+    arguments: AnyExpression[][]
+};
+type ParentExpression = {
+    type: ExpressionTypes.PARENT,
+    token: Token,
+    children: AnyExpression[]
+};
+
+type Statement =
+    IfStatement
+    | SwitchStatement
+    | LoopStatement
+    | WhileStatement
+    | ForStatement
+    | FunctionStatement
+    | BreakStatement
+    | ContinueStatement
+    | Expression;
+type IfStatement = {
+    type: ExpressionTypes.IF,
+    token: Token,
+    if: { requirement: AnyExpression[], scope: ScopeInfo },
+    else: null | ScopeInfo
+};
+type SwitchStatement = {
+    type: ExpressionTypes.SWITCH,
+    token: Token,
+    input: AnyExpression[],
+    cases: { case: AnyExpression[], scope: ScopeInfo }[],
+    default: null | ScopeInfo
+};
+type LoopStatement = {
+    type: ExpressionTypes.LOOP,
+    token: Token,
+    scope: ScopeInfo
+};
+type WhileStatement = {
+    type: ExpressionTypes.WHILE,
+    token: Token,
+    requirement: AnyExpression[],
+    scope: ScopeInfo
+};
+type ForStatement = {
+    type: ExpressionTypes.FOR,
+    token: Token,
+    init: AnyExpression[],
+    requirement: AnyExpression[],
+    step: AnyExpression[],
+    scope: ScopeInfo
+};
+type FunctionStatement = {
+    type: ExpressionTypes.FUNCTION,
+    token: Token,
+    name: Token,
+    arguments: VariableHolder[],
+    scope: ScopeInfo
+};
+type BreakStatement = {
+    type: ExpressionTypes.BREAK,
+    token: Token
+};
+type ContinueStatement = {
+    type: ExpressionTypes.CONTINUE,
+    token: Token
+};
+
+enum VariableType {
+    INT,
+    FLOAT,
+    STRING,
+    ARRAY,
+    FUNCTION,
+}
+
+type VariableHolder = { name: string, type: VariableType, const: boolean, id: number };
+type FunctionHolder = { name: string, definition: FunctionStatement, id: number };
+
+type ScopeInfo = {
+    parent: ScopeInfo | null,
+    groups: ParentExpression,
+    variables: Record<string, VariableHolder>,
+    functions: Record<string, FunctionHolder>,
+    statements: Statement[]
+};
+
+let runtimeId = 0;
+
+const TokenLookup = {
+    "=": TokenType.SET,
+    "!": TokenType.NOT,
+    "~": TokenType.NOT,
+    ">": TokenType.GREATER,
+    "<": TokenType.SMALLER,
+    "|": TokenType.OR,
+    "&": TokenType.AND,
+    "^": TokenType.XOR,
+    "+": TokenType.PLUS,
+    "-": TokenType.MINUS,
+    "*": TokenType.MULTIPLY,
+    "/": TokenType.DIVIDE,
+    "(": TokenType.PARENTHESES_OPEN,
+    ")": TokenType.PARENTHESES_CLOSE,
+    "[": TokenType.SQUARE_BRACKET_OPEN,
+    "]": TokenType.SQUARE_BRACKET_CLOSE,
+    "{": TokenType.CURLY_BRACKET_OPEN,
+    "}": TokenType.CURLY_BRACKET_CLOSE,
+    "\n": TokenType.LINE_BREAK,
+    ";": TokenType.SEMICOLON,
+    ",": TokenType.COMMA,
+};
+
+const EqualsTokenLookup = {
+    [TokenType.PLUS]: TokenType.SET_ADD,
+    [TokenType.MINUS]: TokenType.SET_SUBTRACT,
+    [TokenType.MULTIPLY]: TokenType.SET_MULTIPLY,
+    [TokenType.DIVIDE]: TokenType.SET_DIVIDE,
+    [TokenType.SET]: TokenType.EQUALS,
+    [TokenType.GREATER]: TokenType.GREATER_EQUAL,
+    [TokenType.SMALLER]: TokenType.SMALLER_EQUAL,
+    [TokenType.NOT]: TokenType.NOT_EQUALS,
+};
+
+// 0.08ms for TokenOtherLookup
+const TokenOtherLookup = {};
+const __Place_a = "a".charCodeAt(0);
+const __Place_z = "z".charCodeAt(0);
+const __Place_A = "A".charCodeAt(0);
+const __Place_Z = "Z".charCodeAt(0);
+for (let i = 0; i < 10; i++) TokenOtherLookup[i] = TokenType.INT;
+for (let i = __Place_a; i <= __Place_z; i++) TokenOtherLookup[String.fromCharCode(i)] = TokenType.WORD;
+for (let i = __Place_A; i <= __Place_Z; i++) TokenOtherLookup[String.fromCharCode(i)] = TokenType.WORD;
+
+const BracketLookup = {
+    [TokenType.PARENTHESES_OPEN]: TokenType.PARENTHESES_CLOSE,
+    [TokenType.SQUARE_BRACKET_OPEN]: TokenType.SQUARE_BRACKET_CLOSE,
+    [TokenType.CURLY_BRACKET_OPEN]: TokenType.CURLY_BRACKET_CLOSE,
+};
+
+function throwError(code: string, t: Token | AnyExpression, error: string) {
+    const token = "token" in t ? t.token : t;
+    const lines = code.split("\n");
+    let line = 0;
+    let key = 0;
+    const L = (token.value ?? " ").length;
+    for (let i = 0; i <= token.index; i++) {
+        key++;
+        if (code[i] === "\n") {
+            line++;
+            key = 0;
+        }
+    }
+    for (let i = -2; i <= 2; i++) {
+        const l = line + i;
+        if (!(l in lines)) continue;
+        if (i === 0) {
+            console.error(chalk.red("> ") + chalk.blue((l + 1) + " | " + lines[l].substring(0, key - 1) + chalk.red(lines[l].substring(key - 1, key - 1 + L) ?? "") + lines[l].substring(key - 1 + L)));
+            console.error(" ".repeat(key + 5) + chalk.red("^".repeat(L)));
+        } else {
+            console.error(chalk.blue("  " + (l + 1) + " | " + lines[l]));
+        }
+    }
+    console.error("\n" + chalk.red(error));
+    process.exit(1);
+}
+
+function tokenize(code: string) {
+    const tokens: Token[] = [];
+    let openNot = false;
+    for (let i = 0; i < code.length; i++) {
+        const char = code[i];
+        if (char === " ") continue;
+        if (char === "/" && code[i + 1] === "/") {
+            while (true) {
+                i++;
+                if (i === code.length) {
+                    break;
+                }
+                const c2 = code[i];
+                if (c2 === "\n") {
+                    i--;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (char === "/" && code[i + 1] === "*") {
+            while (true) {
+                i++;
+                if (i === code.length) {
+                    break;
+                }
+                const c2 = code[i - 1];
+                const c3 = code[i];
+                if (c2 === "*" && c3 === "/") {
+                    break;
+                }
+            }
+            continue;
+        }
+        const look = TokenLookup[char];
+        if (look) {
+            const last = tokens[tokens.length - 1];
+            if (!openNot && look === TokenType.SET) {
+                const lookNew = EqualsTokenLookup[last?.type];
+                if (lookNew) {
+                    tokens.splice(tokens.length - 1, 1);
+                    tokens.push({type: lookNew, value: last.value + char, index: last.index});
+                    continue;
+                }
+            }
+            if (look === TokenType.NOT) {
+                if (openNot) {
+                    openNot = false;
+                    tokens.splice(tokens.length - 2, 2);
+                    continue;
+                }
+                openNot = true;
+                tokens.push(
+                    {type: TokenType.PARENTHESES_OPEN, index: i, value: "("}
+                );
+            } else if (openNot) {
+                throwError(code, {type: 0, index: i}, "Expected a non-symbolic expression after not symbol.");
+                return null;
+            }
+            if (last && last.type === look && (look === TokenType.PLUS || look === TokenType.MINUS)) {
+                tokens.splice(tokens.length - 1, 1);
+                tokens.push(
+                    {
+                        type: look === TokenType.PLUS ? TokenType.SET_ADD : TokenType.SET_SUBTRACT,
+                        value: char + "=",
+                        index: last.index
+                    },
+                    {
+                        type: TokenType.INT,
+                        value: "1",
+                        index: last.index
+                    }
+                );
+                continue;
+            }
+            tokens.push({type: look, value: char, index: i}); // todo: remove value from here
+            continue;
+        }
+        if (char === '"' || char === "'") {
+            let acc = "";
+            const sI = i;
+            let backslash = false;
+            while (true) {
+                i++;
+                if (i === code.length) {
+                    throwError(code, {type: 0, index: sI}, "SyntaxError: Expected the string to end.");
+                    return null;
+                }
+                const c2 = code[i];
+                if (c2 === "\n") {
+                    throwError(code, {
+                        type: 0,
+                        index: i
+                    }, "SyntaxError: Expected (" + char + ") instead got a line break.");
+                    return null;
+                }
+                if (c2 === char && !backslash) {
+                    break;
+                }
+                if (c2 === "\\") backslash = !backslash;
+                else backslash = false;
+                acc += c2;
+            }
+            if (openNot) {
+                throwError(code, {type: 0, index: sI}, "SyntaxError: Cannot use the not symbol on a string literal.");
+                return null;
+            }
+            tokens.push({type: TokenType.STRING, index: sI, value: char + acc + char});
+            continue;
+        }
+        const otherLook = TokenOtherLookup[char];
+        if (!otherLook) {
+            throwError(code, {type: 0, index: i}, "SyntaxError: Undefined token " + chalk.yellow("'" + char + "'"));
+            return null;
+        }
+        let acc = char;
+        const sI = i;
+        while (true) {
+            i++;
+            if (i === code.length) {
+                break;
+            }
+            const c2 = code[i];
+            if (TokenOtherLookup[c2] !== otherLook) {
+                i--;
+                break;
+            }
+            acc += c2;
+        }
+        const last = tokens[tokens.length - 1];
+        tokens.push({type: otherLook, index: sI, value: acc});
+        if (openNot) {
+            tokens.push({type: TokenType.PARENTHESES_CLOSE, index: sI, value: ")"});
+            openNot = false;
+        }
+        if (!last) continue;
+        if (last.type === TokenType.MULTIPLY || last.type === TokenType.DIVIDE) {
+            const last3 = tokens[tokens.length - 3];
+            const p = [];
+            let nd = tokens.length - 3;
+            if (last3.type === TokenType.PARENTHESES_CLOSE) {
+                nd = tokens.length - 1;
+            }
+            tokens.splice(nd, 0, ...p, {
+                type: TokenType.PARENTHESES_OPEN, index: tokens[nd].index, value: "("
+            });
+            tokens.push({type: TokenType.PARENTHESES_CLOSE, index: sI, value: ")"});
+        }
+    }
+    if (openNot) {
+        throwError(code, tokens[tokens.length - 1], "SyntaxError: The not symbol wasn't completed.");
+    }
+    return tokens;
+}
+
+function group(code: string, tokens: Token[]): ParentExpression & { deepness: number } {
+    const groups = {parent: null, end: null, token: null, children: []};
+    let parent = groups;
+    let deepness = 1;
+    let maxDeepness = 1;
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (
+            token.type === TokenType.PARENTHESES_OPEN ||
+            token.type === TokenType.SQUARE_BRACKET_OPEN ||
+            token.type === TokenType.CURLY_BRACKET_OPEN
+        ) {
+            parent = {parent, end: BracketLookup[token.type], token, children: []};
+            deepness++;
+            maxDeepness = Math.max(deepness, maxDeepness);
+            continue;
+        }
+        if (parent.end === token.type) {
+            const children = parent.children;
+            parent = parent.parent;
+            parent.children.push({type: ExpressionTypes.PARENT, children});
+            deepness--;
+            continue;
+        }
+        parent.children.push(token);
+    }
+    if (parent !== groups) {
+        throwError(code, parent.token, "SyntaxError: The bracket was never closed.");
+        return null;
+    }
+    return {
+        type: ExpressionTypes.PARENT,
+        token: {type: TokenType.LINE_BREAK, index: 0},
+        children: groups.children,
+        deepness: maxDeepness
+    };
+}
+
+function nextUntilSemicolon(groups: ParentExpression, index: number, code: string): [(Token | Expression)[], number] {
+    const list: (Token | Expression)[] = [];
+    for (let i = index; i < groups.children.length; i++) {
+        const group = groups.children[i];
+        if (group.type !== ExpressionTypes.PARENT && group.type === TokenType.SEMICOLON) return [list, i];
+        list.push(group);
+    }
+    throwError(code, <Token>groups.children[index], "SyntaxError: Expected a semicolon after the expression.");
+}
+
+function findVariable(info: ScopeInfo, name: string): { parent: ScopeInfo, value: VariableHolder } | null {
+    if (name in info.variables) return {
+        parent: info,
+        value: info.variables[name]
+    };
+    if (info.parent) return findVariable(info.parent, name);
+    return null;
+}
+
+function findFunction(info: ScopeInfo, name: string): { parent: ScopeInfo, value: FunctionHolder } | null {
+    if (name in info.functions) return {
+        parent: info,
+        value: info.functions[name]
+    };
+    if (info.parent) return findFunction(info.parent, name);
+    return null;
+}
+
+function splitTokensWithComma(group: AnyExpression[], code: string, split = TokenType.COMMA): AnyExpression[][] {
+    if (group.length === 0) return [];
+    const list = [[]];
+    for (let i = 0; i < group.length; i++) {
+        const current = group[i];
+        if (current.type === split) {
+            list.push([]);
+            if (split === TokenType.COMMA && i === group.length - 1) {
+                throwError(code, current, "SyntaxError: Expected an expression after the comma.");
+                return null;
+            }
+            continue;
+        }
+        list[list.length - 1].push(current);
+    }
+    return list;
+}
+
+const SetOperations: number[] = [
+    TokenType.SET,
+    TokenType.SET_ADD,
+    TokenType.SET_SUBTRACT,
+    TokenType.SET_MULTIPLY,
+    TokenType.SET_DIVIDE,
+];
+
+const SetOperatorLookup = {
+    [TokenType.SET_ADD]: TokenType.PLUS,
+    [TokenType.SET_SUBTRACT]: TokenType.MINUS,
+    [TokenType.SET_MULTIPLY]: TokenType.MULTIPLY,
+    [TokenType.SET_DIVIDE]: TokenType.DIVIDE,
+};
+
+function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, ignoreLiterals = true, allStatements: Statement[] = [], allVariables: VariableHolder[], useParentScopeVariables = false) {
+    const statements: Statement[] = [];
+    const scopeInfo: ScopeInfo = {
+        parent: parent,
+        groups,
+        variables: useParentScopeVariables ? parent.variables : {},
+        functions: useParentScopeVariables ? parent.functions : {},
+        statements
+    };
+    for (let i = 0; i < groups.children.length; i++) {
+        const group = groups.children[i];
+        if (group.type === ExpressionTypes.PARENT) {
+            // todo
+            continue;
+        }
+        if (group.type === TokenType.LINE_BREAK) continue;
+        if (group.type === TokenType.SEMICOLON) continue;
+        if (ignoreLiterals) {
+            if (group.type === TokenType.INT) continue;
+            if (group.type === TokenType.FLOAT) continue;
+            if (group.type === TokenType.STRING) continue;
+        }
+        if (group.type === TokenType.WORD) {
+            if (group.value === "break") {
+                const statement: BreakStatement = {
+                    type: ExpressionTypes.BREAK, token: group
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (group.value === "continue") {
+                const statement: ContinueStatement = {
+                    type: ExpressionTypes.CONTINUE, token: group
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (group.value === "let" || group.value === "const") {
+                const name = groups.children[++i];
+                if (!name || name.type === ExpressionTypes.PARENT || name.type !== TokenType.WORD) {
+                    throwError(code, group, "SyntaxError: Expected a valid variable name.");
+                    return null;
+                }
+                const equals = groups.children[++i];
+                if (!equals || equals.type === ExpressionTypes.PARENT || equals.type !== TokenType.SET) {
+                    throwError(code, {
+                        type: 0,
+                        index: name.index + name.value.length
+                    }, "SyntaxError: Expected '='");
+                    return null;
+                }
+                const [value, nI3] = nextUntilSemicolon(groups, i + 1, code);
+                i = nI3;
+                const existing = scopeInfo.variables[name.value];
+                if (existing) {
+                    throwError(code, group, "SyntaxError: Cannot redeclare a variable: '" + name.value + "'.");
+                    return null;
+                }
+                allVariables.push(scopeInfo.variables[name.value] = {
+                    type: VariableType.INT,
+                    name: name.value,
+                    const: group.value === "const",
+                    id: ++runtimeId
+                });
+                const statement: DefineIntExpression = {
+                    type: ExpressionTypes.DEFINE_INT,
+                    token: group,
+                    name: <Token>name,
+                    value,
+                    const: group.value === "const",
+                    new: true,
+                    extra: null
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (group.value === "function") {
+                const name = groups.children[++i];
+                if (!name || name.type === ExpressionTypes.PARENT || name.type !== TokenType.WORD) {
+                    throwError(code, group, "SyntaxError: Expected a valid function name.");
+                    return null;
+                }
+                const argumentList = groups.children[++i];
+                if (!argumentList || argumentList.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected an argument list for the function statement.");
+                    return null;
+                }
+                const scope = groups.children[++i];
+                if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a scope for the function statement.");
+                    return null;
+                }
+                const vars: VariableHolder[] = [];
+                for (let i = 0; i < argumentList.children.length; i += 2) {
+                    const argName = argumentList.children[i];
+                    const comma = argumentList.children[i + 1];
+                    if ("token" in argName) {
+                        throwError(code, argName, "Expected argument of a function to be a valid variable name.");
+                        return null;
+                    }
+                    if (i !== argumentList.children.length - 1 && (!comma || comma.type !== TokenType.COMMA)) {
+                        throwError(code, comma, "Expected a comma.");
+                        return null;
+                    }
+                    const variable = scopeInfo.variables[argName.value] = {
+                        type: VariableType.INT,
+                        name: argName.value,
+                        const: false,
+                        id: ++runtimeId
+                    };
+                    allVariables.push(variable);
+                    vars.push(variable);
+                }
+                const statement: FunctionStatement = {
+                    type: ExpressionTypes.FUNCTION,
+                    token: group,
+                    name,
+                    arguments: vars,
+                    scope: ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables, true)
+                };
+                if (scopeInfo.functions[name.value]) {
+                    throwError(code, group, "The function named '" + name.value + "' is already defined in the scope.");
+                }
+                scopeInfo.functions[name.value] = {
+                    name: name.value,
+                    id: ++runtimeId,
+                    definition: statement
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (group.value === "if") {
+                const requirement = groups.children[++i];
+                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a requirement for the if statement.");
+                    return null;
+                }
+                if (requirement.children.length === 0) {
+                    throwError(code, group, "SyntaxError: Expected the requirement of the if statement to not be empty.");
+                    return null;
+                }
+                const scope = groups.children[++i];
+                if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a scope for the if statement.");
+                    return null;
+                }
+                const statement: IfStatement = {
+                    type: ExpressionTypes.IF,
+                    token: group,
+                    if: {
+                        scope: ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables, true),
+                        requirement: requirement.children
+                    },
+                    else: null
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (group.value === "else") {
+                const lastStatement = <IfStatement>statements[statements.length - 1];
+                if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
+                    throwError(code, group, "SyntaxError: Unexpected else statement.");
+                    return null;
+                }
+                const next = groups.children[++i];
+                if (next && next.type === ExpressionTypes.PARENT) {
+                    // } else {
+                    if (lastStatement.else) {
+                        throwError(code, group, "SyntaxError: Else statement's bounding if statement already has an else statement.");
+                        return null;
+                    }
+                    lastStatement.else = ast(code, next, scopeInfo, ignoreLiterals, allStatements, allVariables, true);
+                    continue;
+                }
+                if (!next || next.type !== TokenType.WORD) {
+                    throwError(code, group, "SyntaxError: Expected 'if'");
+                    return null;
+                }
+                // } else if() {
+                if (next.value !== "if") {
+                    throwError(code, group, "SyntaxError: Expected the 'if' keyword.");
+                    return null;
+                }
+                const requirement = groups.children[++i];
+                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a requirement for the else-if statement.");
+                    return null;
+                }
+                if (requirement.children.length === 0) {
+                    throwError(code, group, "SyntaxError: Expected the requirement of the else-if statement to not be empty.");
+                    return null;
+                }
+                const scope = groups.children[++i];
+                if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a scope for the else-if statement.");
+                    return null;
+                }
+                lastStatement.else = {
+                    statements: [{
+                        type: ExpressionTypes.IF, token: next, else: null, if: {
+                            scope: ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables, true),
+                            requirement: requirement.children
+                        }
+                    }], groups: scope, parent: scopeInfo, variables: {}, functions: {}
+                };
+                continue;
+            }
+            if (group.value === "elseif") {
+                const lastStatement = <IfStatement>statements[statements.length - 1];
+                if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
+                    throwError(code, group, "SyntaxError: Unexpected else-if statement.");
+                    return null;
+                }
+                const requirement = groups.children[++i];
+                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a requirement for the else-if statement.");
+                    return null;
+                }
+                if (requirement.children.length === 0) {
+                    throwError(code, group, "SyntaxError: Expected the requirement of the else-if statement to not be empty.");
+                    return null;
+                }
+                const scope = groups.children[++i];
+                if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a scope for the else-if statement.");
+                    return null;
+                }
+                lastStatement.else = {
+                    statements: [{
+                        type: ExpressionTypes.IF, token: group, else: null, if: {
+                            scope: ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables, true),
+                            requirement: requirement.children
+                        }
+                    }], groups: scope, parent: scopeInfo, variables: {}, functions: {}
+                };
+                continue;
+            }
+            if (group.value === "loop") {
+                const scope = groups.children[++i];
+                if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a scope for the loop statement.");
+                    return null;
+                }
+                const statement: LoopStatement = {
+                    type: ExpressionTypes.LOOP,
+                    token: group,
+                    scope: ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables)
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (group.value === "while") {
+                const requirement = groups.children[++i];
+                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a requirement for the while statement.");
+                    return null;
+                }
+                if (requirement.children.length === 0) {
+                    throwError(code, group, "SyntaxError: Expected the requirement of the while statement to not be empty.");
+                    return null;
+                }
+                const scope = groups.children[++i];
+                if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a scope for the while statement.");
+                    return null;
+                }
+                const scopeAst = ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables);
+
+                scopeAst.statements.splice(0, 0, {
+                    type: ExpressionTypes.IF, token: group, if: {
+                        requirement: requirement.children, scope: {
+                            statements: [
+                                {
+                                    type: ExpressionTypes.BREAK, token: group
+                                }
+                            ], parent: scopeAst, variables: {}, functions: {}, groups: {
+                                type: ExpressionTypes.PARENT, token: group, children: []
+                            }
+                        }
+                    }, else: null
+                });
+                const statement: LoopStatement = {
+                    type: ExpressionTypes.LOOP,
+                    token: group,
+                    scope: scopeAst
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (group.value === "for") {
+                const requirement = groups.children[++i];
+                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a requirement for the while statement.");
+                    return null;
+                }
+                if (requirement.children.length === 0) {
+                    throwError(code, group, "SyntaxError: Expected the requirement of the while statement to not be empty.");
+                    return null;
+                }
+                const scope = groups.children[++i];
+                if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                    throwError(code, group, "SyntaxError: Expected a scope for the while statement.");
+                    return null;
+                }
+                const split = splitTokensWithComma(requirement.children, code, TokenType.SEMICOLON);
+                if (split.length !== 3) {
+                    throwError(code, group, "Expected one initial statement, one requirement and one step statement for the for-loop statement.");
+                }
+                const initialAst = ast(code, {
+                    type: ExpressionTypes.PARENT,
+                    token: group,
+                    children: [...split[0], {type: TokenType.SEMICOLON, value: ";", index: group.index}]
+                }, scopeInfo, ignoreLiterals, allStatements, allVariables, true);
+                const stepAst = ast(code, {
+                    type: ExpressionTypes.PARENT,
+                    token: group,
+                    children: [...split[2], {type: TokenType.SEMICOLON, value: ";", index: group.index}]
+                }, scopeInfo, ignoreLiterals, allStatements, allVariables);
+                const scopeAst = ast(code, scope, scopeInfo, ignoreLiterals, allStatements, allVariables);
+                //console.log(initialAst, split[1], stepAst);
+                allStatements.push(...initialAst.statements);
+                statements.push(...initialAst.statements);
+                scopeAst.statements.splice(0, 0, {
+                    type: ExpressionTypes.IF, token: group, if: {
+                        requirement: [...split[1]], scope: {
+                            statements: [], parent: scopeAst, variables: {}, functions: {}, groups: {
+                                type: ExpressionTypes.PARENT, token: group, children: []
+                            }
+                        }
+                    }, else: {
+                        statements: [
+                            {
+                                type: ExpressionTypes.BREAK, token: group
+                            }
+                        ], parent: scopeAst, variables: {}, functions: {}, groups: {
+                            type: ExpressionTypes.PARENT, token: group, children: []
+                        }
+                    }
+                });
+                scopeAst.statements.push(...stepAst.statements);
+                const statement: LoopStatement = {
+                    type: ExpressionTypes.LOOP,
+                    token: group,
+                    scope: scopeAst
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            const next = groups.children[++i];
+            if (!next) {
+                throwError(code, group, "SyntaxError: Unexpected ending.");
+                continue;
+            }
+            if (SetOperations.includes(next.type)) {
+                const [value, nI2] = nextUntilSemicolon(groups, i + 1, code);
+                i = nI2;
+                const existing = findVariable(scopeInfo, group.value);
+                if (!existing) {
+                    throwError(code, group, "SyntaxError: Undefined variable: '" + group.value + "'.");
+                    return null;
+                }
+                if (existing.value.const) {
+                    throwError(code, group, "SyntaxError: Cannot alter variables that are defined as constants.");
+                    return null;
+                }
+                if (next.type !== TokenType.SET) {
+                    value.splice(
+                        0, 0,
+                        {type: TokenType.WORD, value: group.value, index: group.index},
+                        {type: SetOperatorLookup[next.type], value: " ", index: group.index}
+                    );
+                }
+                // TODO: check type
+                const statement: DefineIntExpression = {
+                    type: ExpressionTypes.DEFINE_INT,
+                    token: group,
+                    name: group,
+                    const: false,
+                    value: value,
+                    new: false,
+                    extra: null
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            if (next.type === ExpressionTypes.PARENT) {
+                const statement: CallExpression = {
+                    type: ExpressionTypes.CALL,
+                    token: group,
+                    name: group,
+                    arguments: splitTokensWithComma(next.children, code)
+                };
+                allStatements.push(statement);
+                statements.push(statement);
+                continue;
+            }
+            continue;
+            /*throwError(code, group, "SyntaxError: Unexpected token: '" + group.value + "'");
+            return null;*/
+        }
+        throwError(code, group, "SyntaxError: Unexpected token.");
+        return null;
+    }
+    return scopeInfo;
+}
+
+const ignoring: number[] = [
+    TokenType.SEMICOLON,
+    TokenType.COMMA,
+    TokenType.LINE_BREAK
+];
+const operators: number[] = [
+    TokenType.PLUS,
+    TokenType.MINUS,
+    TokenType.MULTIPLY,
+    TokenType.DIVIDE,
+    TokenType.EQUALS,
+    TokenType.NOT_EQUALS,
+    TokenType.GREATER_EQUAL,
+    TokenType.SMALLER_EQUAL,
+    TokenType.GREATER,
+    TokenType.SMALLER,
+    TokenType.AND,
+    TokenType.OR,
+    TokenType.XOR
+];
+const nonOperators: number[] = [
+    TokenType.WORD,
+    TokenType.INT,
+    TokenType.FLOAT,
+    ExpressionTypes.PARENT,
+];
+
+type RecursiveTokens = (Token | RecursiveTokens)[];
+
+function filterExpressionAssembly(code: string, group: AnyExpression[]) {
+    const filtered: RecursiveTokens = [];
+    let ind = 0;
+    for (let i = 0; i < group.length; i++) {
+        const expression = group[i];
+        if (ignoring.includes(expression.type) || ("token" in expression && expression.type !== ExpressionTypes.PARENT)) continue;
+        if (!nonOperators.includes(expression.type) && !operators.includes(expression.type)) {
+            throwError(code, expression, "SyntaxError: Unexpected token inside an expression.");
+        }
+        const isOperator = operators.includes(expression.type);
+        if ((ind % 2 === 1) !== isOperator) {
+            throwError(code, expression, "SyntaxError: Expected an " + (isOperator ? "expression" : "operator") + ", got an " + (isOperator ? "operator" : "expression") + ".");
+        }
+        let ps: Token | RecursiveTokens;
+        if (expression.type === ExpressionTypes.PARENT) {
+            ps = filterExpressionAssembly(code, expression.children);
+        } else ps = expression;
+        filtered.push(ps);
+        ind++;
+    }
+    return filtered;
+}
+
+function assembleExpression(
+    code: string,
+    filtered: RecursiveTokens,
+    strings: Record<string, number>,
+    scope: ScopeInfo,
+    currentDeepness = 0,
+    lastSection: string[],
+    sections: Record<string, string[]>
+) {
+    const first = filtered[0];
+    if (Array.isArray(first)) {
+        lastSection = assembleExpression(code, first, strings, scope, currentDeepness + 1, lastSection, sections);
+        lastSection.push(
+            `mov eax, [_temp${currentDeepness + 1}]`,
+            `mov [_temp${currentDeepness}], eax`
+        );
+    } else {
+        if (first.type === TokenType.INT) {
+            lastSection.push(
+                `mov eax, ${first.value}`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        } else if (first.type === TokenType.WORD) {
+            // variable
+            const variable = findVariable(scope, first.value);
+            if (!variable) {
+                throwError(code, first, "SyntaxError: Variable not defined: '" + first.value + "'");
+            }
+            lastSection.push(
+                `mov eax, [_var${variable.value.id}]`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        }
+    }
+
+    // todo: remove if there are things like: mov eax, [A] \n mov [A], eax  second line is useless.
+    function normalOperatorLookup(expression: Token | RecursiveTokens) {
+        let el;
+        if (Array.isArray(expression)) {
+            lastSection = assembleExpression(code, expression, strings, scope, currentDeepness + 1, lastSection, sections);
+            el = `[_temp${currentDeepness + 1}]`;
+        } else {
+            if (
+                expression.type !== TokenType.INT &&
+                expression.type !== TokenType.WORD
+            ) {
+                throwError(code, expression, "SyntaxError: Expected an integer or a variable.");
+            }
+            if (expression.type === TokenType.INT) {
+                el = expression.value;
+            } else if (expression.type === TokenType.WORD) {
+                const variable = findVariable(scope, expression.value);
+                if (!variable) {
+                    throwError(code, expression, "SyntaxError: Variable not defined: '" + expression.value + "'");
+                }
+                el = `[_var${variable.value.id}]`;
+            }
+        }
+        return el;
+    }
+
+    function compareOperatorLookup(a: string, b: string, c: string) {
+        return (expression: Token | RecursiveTokens) => {
+            const el = normalOperatorLookup(expression);
+            const nextSection = ++runtimeId;
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `mov ebx, ${el}`,
+                `cmp eax, ebx`,
+                `${a} _c0${nextSection}`,
+                `jmp _c1${nextSection}`
+            );
+            sections["_c0" + nextSection] = [
+                `mov eax, ${b}`,
+                `mov [_temp${currentDeepness}], eax`,
+                `jmp _c2${nextSection}`
+            ];
+            sections["_c1" + nextSection] = [
+                `mov eax, ${c}`,
+                `mov [_temp${currentDeepness}], eax`,
+                `jmp _c2${nextSection}`
+            ];
+            lastSection = sections["_c2" + nextSection] = [];
+        };
+    }
+
+    const OperatorLookup = {
+        [TokenType.PLUS](expression: Token | RecursiveTokens) {
+            const el = normalOperatorLookup(expression);
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `add eax, ${el}`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        },
+        [TokenType.MINUS](expression: Token | RecursiveTokens) {
+            const el = normalOperatorLookup(expression);
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `sub eax, ${el}`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        },
+        [TokenType.MULTIPLY](expression: Token | RecursiveTokens) {
+            const el = normalOperatorLookup(expression);
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `imul eax, ${el}`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        },
+        [TokenType.DIVIDE](expression: Token | RecursiveTokens) {
+            const el = normalOperatorLookup(expression);
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `mov ecx, ${el}`,
+                `div ecx`, // note: remainder is in edx
+                `mov [_temp${currentDeepness}], eax`
+            );
+        },
+        [TokenType.EQUALS]: compareOperatorLookup("je", "1", "0"),
+        [TokenType.NOT_EQUALS]: compareOperatorLookup("je", "0", "1"),
+        [TokenType.GREATER_EQUAL]: compareOperatorLookup("jl", "0", "1"),
+        [TokenType.SMALLER_EQUAL]: compareOperatorLookup("jg", "0", "1"),
+        [TokenType.GREATER]: compareOperatorLookup("jg", "1", "0"),
+        [TokenType.SMALLER]: compareOperatorLookup("jl", "1", "0"),
+        [TokenType.AND](expression: Token | RecursiveTokens) {
+            const el = normalOperatorLookup(expression);
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `and eax, ${el}`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        },
+        [TokenType.OR](expression: Token | RecursiveTokens) {
+            const el = normalOperatorLookup(expression);
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `or eax, ${el}`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        },
+        [TokenType.XOR](expression: Token | RecursiveTokens) {
+            const el = normalOperatorLookup(expression);
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `xor eax, ${el}`,
+                `mov [_temp${currentDeepness}], eax`
+            );
+        },
+    };
+    for (let i = 1; i < filtered.length; i += 2) {
+        const operator = <Token>filtered[i];
+        const expression = filtered[i + 1];
+        const look = OperatorLookup[operator.type];
+        if (!look) throw new Error("Assumption failed.");
+        look(expression);
+    }
+    return lastSection;
+}
+
+const escapes = {
+    "n": 10,
+    "t": 9,
+    "b": 8,
+    "r": 13,
+    "f": 12,
+    "v": 11
+};
+
+function getStrings(tokens: Token[]) {
+    const strings: Record<string, number> = {};
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (
+            token.type === TokenType.STRING
+        ) {
+            if (strings[token.value]) continue;
+            runtimeId++;
+            strings[token.value] = runtimeId;
+        }
+    }
+    return strings;
+}
+
+function assemble(
+    code: string,
+    strings: Record<string, number>,
+    scope: ScopeInfo,
+    tokens: Token[],
+    statements: Statement[],
+    deepness: number,
+    currentDeepness = 0,
+    namedSections: Record<string, string[]>,
+    lastSection: string[],
+    breakSection: string = null
+) {
+    const CallLookup = {
+        exit(statement: CallExpression) {
+            const filtered = filterExpressionAssembly(code, statement.arguments[0]);
+            lastSection = assembleExpression(code, filtered, strings, scope, currentDeepness, lastSection, namedSections);
+            lastSection.push(
+                `mov eax, 1`,
+                `mov ebx, [_temp${currentDeepness}]`,
+                `int 0x80`
+            );
+        },
+        printS(statement: CallExpression) {
+            for (let i = 0; i < statement.arguments.length; i++) {
+                const arg = statement.arguments[i];
+                if (arg.length === 1 && arg[0].type === TokenType.STRING) {
+                    lastSection.push(
+                        `mov eax, 4`,
+                        `mov ebx, 1`,
+                        `mov ecx, _${strings[arg[0].value]}`,
+                        `mov edx, ${arg[0].value.length - 2}`,
+                        `int 0x80`
+                    );
+                } else {
+                    const filtered = filterExpressionAssembly(code, arg);
+                    lastSection = assembleExpression(code, filtered, strings, scope, currentDeepness, lastSection, namedSections);
+                    lastSection.push(
+                        // todo
+                    );
+                }
+            }
+        },
+        asm(statement: CallExpression) {
+            for (let i = 0; i < statement.arguments.length; i++) {
+                const arg = statement.arguments[i];
+                if (arg.length === 1 && arg[0].type === TokenType.STRING) {
+                    if (arg[0].value.includes(":")) {
+                        throwError(code, statement.token, "The ':' character cannot be used in asm() function since it can cause corruption.");
+                    }
+                    lastSection.push(
+                        arg[0].value.slice(1, -1)
+                    );
+                } else throwError(code, statement.token, "Expected a literal string for the asm() function.");
+            }
+        }
+    };
+    const StatementLookup = {
+        [ExpressionTypes.CALL](statement: CallExpression) {
+            const look = CallLookup[statement.name.value];
+            if (look) return look(statement);
+            const func = findFunction(scope, statement.name.value);
+            if (!func) {
+                throwError(code, statement.token, "SyntaxError: Undefined function: '" + statement.name.value + "'");
+                return;
+            }
+            const givenArgs = statement.arguments;
+            const args = func.value.definition.arguments;
+            if (givenArgs.length !== args.length) {
+                throwError(code, statement.token, "SyntaxError: Expected " + args.length + " arguments, instead got " + givenArgs.length + ".");
+            }
+            for (let i = 0; i < args.length; i++) {
+                const arg = args[i];
+                const givenArg = givenArgs[i];
+                const filtered = filterExpressionAssembly(code, givenArg);
+                lastSection = assembleExpression(code, filtered, strings, scope, currentDeepness, lastSection, namedSections);
+                lastSection.push(
+                    `mov eax, [_temp${currentDeepness}]`,
+                    `mov [_var${arg.id}], eax`
+                );
+            }
+            lastSection.push(`call _func${func.value.id}`);
+        },
+        [ExpressionTypes.DEFINE_INT](statement: DefineIntExpression) {
+            const filtered = filterExpressionAssembly(code, statement.value);
+            lastSection = assembleExpression(code, filtered, strings, scope, currentDeepness, lastSection, namedSections);
+            const variable = findVariable(scope, statement.name.value);
+            if (!variable) throw new Error("Assumption failed.");
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `mov [_var${variable.value.id}], eax`
+            );
+        },
+        [ExpressionTypes.IF](statement: IfStatement) {
+            const filtered = filterExpressionAssembly(code, statement.if.requirement);
+            lastSection = assembleExpression(code, filtered, strings, scope, currentDeepness, lastSection, namedSections);
+            const id = ++runtimeId;
+            lastSection.push(
+                `mov eax, [_temp${currentDeepness}]`,
+                `mov ebx, 0`,
+                `cmp eax, ebx`,
+                `je _i0${id}`,
+                `jmp _i1${id}`
+            );
+            const continueSec = namedSections["_i2" + id] = [];
+            const ifSec = namedSections["_i1" + id] = [];
+            lastSection = assemble(code, strings, statement.if.scope, tokens, statements, deepness, currentDeepness + 1, namedSections, ifSec, breakSection);
+            lastSection.push(`jmp _i2${id}`);
+            const elseSec = namedSections["_i0" + id] = [];
+            if (statement.else) {
+                lastSection = assemble(code, strings, statement.else, tokens, statements, deepness, currentDeepness + 1, namedSections, elseSec, breakSection);
+                lastSection.push(`jmp _i2${id}`);
+            } else elseSec.push(`jmp _i2${id}`);
+            lastSection = continueSec;
+        },
+        [ExpressionTypes.LOOP](statement: LoopStatement) {
+            const id = ++runtimeId;
+            const continueSec = namedSections["_l1" + id] = [];
+            const loopSec = namedSections["_l0" + id] = [];
+            lastSection.push(`jmp _l0${id}`);
+            lastSection = assemble(code, strings, statement.scope, tokens, statements, deepness, currentDeepness + 1, namedSections, loopSec, "_l1" + id);
+            lastSection.push(`jmp _l0${id}`);
+            lastSection = continueSec;
+        },
+        [ExpressionTypes.BREAK](statement: BreakStatement) {
+            if (!breakSection) {
+                throwError(code, statement.token, "SyntaxError: Break keyword can only be used inside loops.");
+            }
+            lastSection.push(`jmp ${breakSection}`);
+        },
+        [ExpressionTypes.FUNCTION](statement: FunctionStatement) {
+            const func = scope.functions[statement.name.value];
+            if (!func) throw new Error("Assumption failed.");
+            const fnSec = namedSections["_func" + func.id] = [];
+            const varObj = {};
+            const varL = func.definition.arguments;
+            for (let i = 0; i < varL.length; i++) {
+                const v = varL[i];
+                varObj[v.name] = v;
+            }
+            assemble(code, strings, {
+                parent: statement.scope,
+                variables: varObj,
+                functions: {},
+                groups: {type: ExpressionTypes.PARENT, token: statement.token, children: []},
+                statements: []
+            }, tokens, statements, deepness, currentDeepness + 1, namedSections, fnSec, null);
+            fnSec.push(`ret`);
+        }
+    };
+    for (let i = 0; i < scope.statements.length; i++) {
+        const statement = scope.statements[i];
+        const look = StatementLookup[statement.type];
+        if (!look) {
+            throwError(code, statement.token, "InternalError: Unhandled token type. ID: " + statement.type);
+        }
+        look(statement);
+    }
+    return lastSection;
+}
+
+function assemblyToString(
+    namedSections: Record<string, string[]>,
+    strings: Record<string, number>,
+    tokens: Token[],
+    statements: Statement[],
+    variables: VariableHolder[],
+    scope: ScopeInfo,
+    deepness: number
+) {
+    const sectionData = [];
+    const stringKeys = Object.keys(strings);
+    for (let i = 0; i < stringKeys.length; i++) {
+        const string = stringKeys[i];
+        const id = strings[string];
+        sectionData.push(`_${id} db ${string.slice(1, -1).split(/(\\\\|\\[nt"'brfav]|"|')/).map(i => {
+            if (i === '"' || i === '\\"') return `'"'`;
+            if (i === "'" || i === "\\'") return `"'"`;
+            if (i.length !== 2 || i[0] !== "\\" || !(i[1] in escapes)) return "'" + i + "'";
+            return escapes[i[1]];
+        }).filter(i => i).join(",")}, 0`);
+    }
+    for (let i = 0; i < variables.length; i++) {
+        const variable = variables[i];
+        sectionData.push(`_var${variable.id} dd 0`); // db=8, dw=16, dd=32, dq=64 bits
+    }
+    for (let i = 0; i < deepness; i++) {
+        sectionData.push(`_temp${i} dd 0`);
+    }
+    const named = [];
+    const namedKeys = Object.keys(namedSections);
+    for (let i = 0; i < namedKeys.length; i++) {
+        const k = namedKeys[i];
+        named.push(
+            `${k}:`,
+            ...namedSections[k].map(i => "    " + i)
+        )
+    }
+    return [
+        `section .data`,
+        ...sectionData.map(i => "    " + i),
+        `global _start`,
+        ...named
+    ].join("\n");
+}
+
+function cleanJunkAssembly(assembly: string) {
+    return assembly
+        .replace(/ +mov \[_[a-zA-Z\d]+], eax\n +mov eax, \[_[a-zA-Z\d]+]/g, match => {
+            const lines = match.split("\n");
+            const f1 = lines[0].trimStart().slice(5, -6);
+            const f2 = lines[1].trimStart().slice(10, -1);
+            if (f1 !== f2) return match;
+            return match.split("\n")[0];
+        });
+}
+
+function compile(code: string) {
+    const tokens = tokenize(code);
+    const groups = group(code, tokens);
+    const deepness = groups.deepness;
+    const allStatements = [];
+    const allVariables = [];
+    const scope = ast(code, groups, null, true, allStatements, allVariables);
+    const strings = getStrings(tokens);
+    const namedSections = {_start: []};
+    assemble(code, strings, scope, tokens, allStatements, deepness, 0, namedSections, namedSections._start);
+    const string = assemblyToString(namedSections, strings, tokens, allStatements, allVariables, scope, deepness);
+    const cleanAssembly = cleanJunkAssembly(string);
+    fs.writeFileSync("./out.asm", cleanAssembly);
+}
+
+compile(`
+function a(myVar) {
+  for(let i = 0; i < myVar; i++) {
+    printS("hi\\n");
+  }
+}
+
+a(10);
+
+exit(1);
+`);
