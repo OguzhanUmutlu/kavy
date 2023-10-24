@@ -1,9 +1,28 @@
-function f(myVar) {
-  for(let i = 0; i < myVar; i++) {
-    printS("hi\n");
-  }
+function printOneDigit(num) {
+    if (num == 0) { return printS("0"); }
+    if (num == 1) { return printS("1"); }
+    if (num == 2) { return printS("2"); }
+    if (num == 3) { return printS("3"); }
+    if (num == 4) { return printS("4"); }
+    if (num == 5) { return printS("5"); }
+    if (num == 6) { return printS("6"); }
+    if (num == 7) { return printS("7"); }
+    if (num == 8) { return printS("8"); }
+    if (num == 9) { return printS("9"); }
+    printS("huh")
 }
 
-f(5);
+function printDigitsReverse(num) {
+    while(1) {
+        const mod = num % 10;
+        printOneDigit(mod);
+        num /= 10;
+        if (num == 0) { return 0; }
+    }
+}
 
-exit(1);
+printOneDigit(10);
+
+printS("\nExiting... ");
+
+exit(0);
