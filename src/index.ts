@@ -1340,9 +1340,9 @@ function assembleExpression(
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
+                `xor edx, edx`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], eax`,
-                `xor edx, edx`
+                `mov [_temp${currentDeepness}], eax`
             );
         },
         [TokenType.MODULO](expression) {
@@ -1350,9 +1350,9 @@ function assembleExpression(
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
+                `xor edx, edx`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], edx`,
-                `xor edx, edx`
+                `mov [_temp${currentDeepness}], edx`
             );
         },
         [TokenType.EQUALS]: compareOperatorLookup("je", "1", "0"),

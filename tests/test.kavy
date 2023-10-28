@@ -1,4 +1,5 @@
-/*function printOneDigit(num) {
+/*
+function printOneDigit(num) {
     i_print(num + 48);
 }
 
@@ -17,7 +18,7 @@ function printDigitsReverse(num) {
 printDigitsReverse(10);
 
 
-
+*/
 function test(num){
     let mod = num % 10;
     i_print(" ");
@@ -25,5 +26,3 @@ function test(num){
 }
 
 test(53);
-*/
-exit(0x10);
