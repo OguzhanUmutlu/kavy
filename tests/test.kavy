@@ -1,28 +1,29 @@
-function printOneDigit(num) {
-    if (num == 0) { return printS("0"); }
-    if (num == 1) { return printS("1"); }
-    if (num == 2) { return printS("2"); }
-    if (num == 3) { return printS("3"); }
-    if (num == 4) { return printS("4"); }
-    if (num == 5) { return printS("5"); }
-    if (num == 6) { return printS("6"); }
-    if (num == 7) { return printS("7"); }
-    if (num == 8) { return printS("8"); }
-    if (num == 9) { return printS("9"); }
-    printS("huh")
+/*function printOneDigit(num) {
+    i_print(num + 48);
 }
 
 function printDigitsReverse(num) {
-    while(1) {
+    loop {
         const mod = num % 10;
         printOneDigit(mod);
-        num /= 10;
+        printS(" digit.");
+        exit(num / 10);
         if (num == 0) { return 0; }
+        num = num / 10;
+        exit(num);
     }
 }
 
-printOneDigit(10);
+printDigitsReverse(10);
 
-printS("\nExiting... ");
 
-exit(0);
+
+function test(num){
+    let mod = num % 10;
+    i_print(" ");
+    exit(num / 10);
+}
+
+test(53);
+*/
+exit(0x10);

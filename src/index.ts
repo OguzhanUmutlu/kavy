@@ -67,9 +67,15 @@ enum ExpressionTypes {
 }
 
 type Token = {
-    type: TokenType,
+    type: TokenType.INT,
     index: number,
-    value: string
+    value: string,
+    int: number
+} | {
+    type: Exclude<TokenType, TokenType.INT>,
+    index: number,
+    value: string,
+    base?: number
 };
 
 type Expression = DefineIntExpression | DefineFloatExpression | CallExpression |
@@ -265,6 +271,15 @@ const __Place_Z = "Z".charCodeAt(0);
 for (let i = 0; i < 10; i++) TokenOtherLookup[i] = TokenType.INT;
 for (let i = __Place_a; i <= __Place_z; i++) TokenOtherLookup[String.fromCharCode(i)] = TokenType.WORD;
 for (let i = __Place_A; i <= __Place_Z; i++) TokenOtherLookup[String.fromCharCode(i)] = TokenType.WORD;
+TokenOtherLookup._ = TokenType.WORD;
+TokenOtherLookup.$ = TokenType.WORD;
+TokenOtherLookup["@"] = TokenType.WORD;
+TokenOtherLookup["#"] = TokenType.WORD; // some extra word characters
+
+const TokenOtherNextLookup: Record<number, number[ ]> = {
+    [TokenType.WORD]: [TokenType.WORD, TokenType.INT], // myWord, myWord2 etc.
+    [TokenType.INT]: [TokenType.INT] // only expects int after int: 12345
+};
 
 const BracketLookup = {
     [TokenType.PARENTHESES_OPEN]: TokenType.PARENTHESES_CLOSE,
@@ -297,7 +312,7 @@ function throwError(code: string, t: Token | AnyExpression, type: "SyntaxError" 
         if (!(l in lines)) continue;
         if (i === 0) {
             console.error(Color.red("> ") + Color.blue((l + 1) + " | " + lines[l].substring(0, key - 1)) + Color.red(lines[l].substring(key - 1, key - 1 + L) ?? "") + Color.blue(lines[l].substring(key - 1 + L)));
-            console.error(" ".repeat(key + 5) + Color.red("^".repeat(L)));
+            console.error(" ".repeat(key + l.toString().length + 4) + Color.red("^".repeat(L)));
         } else {
             console.error(Color.blue("  " + (l + 1) + " | " + lines[l]));
         }
@@ -306,12 +321,21 @@ function throwError(code: string, t: Token | AnyExpression, type: "SyntaxError" 
     exit(1);
 }
 
+const TokenizerIgnores = [
+    " ", "\n", "\r", "\t"
+];
+const IntTokenTypes = {
+    b: 2,
+    o: 8,
+    x: 16
+};
+
 function tokenize(code: string): Token[] {
     const tokens: Token[] = [];
     let openNot = false;
     for (let i = 0; i < code.length; i++) {
         const char = code[i];
-        if (char === " ") continue;
+        if (TokenizerIgnores.includes(char)) continue;
         if (char === "/" && code[i + 1] === "/") {
             while (true) {
                 i++;
@@ -350,6 +374,9 @@ function tokenize(code: string): Token[] {
                     if (openNot) {
                         tokens.splice(tokens.length - 1, 1);
                     }
+                    if (lookNew === TokenType.INT) {
+                        throw new Error("Assumption failed.");
+                    }
                     tokens.push({type: lookNew, value: last.value + char, index: last.index});
                     openNot = false;
                     continue;
@@ -384,15 +411,26 @@ function tokenize(code: string): Token[] {
                     {
                         type: TokenType.INT,
                         value: "1",
-                        index: last.index
+                        index: last.index,
+                        int: 1
                     }
                 );
                 continue;
             }
+            if (look === TokenType.INT) {
+                throw new Error("Assumption failed.");
+            }
             tokens.push({type: look, value: char, index: i});
             continue;
         }
-        if (char === '"' || char === "'") {
+        if (char === "'") {
+            if (code[i + 2] !== "'") throwError(code, {type: 0, index: i, value: "  "}, "SyntaxError", "Expected a quote(') after the character ")
+            const val = code[i + 1];
+            i += 2;
+            tokens.push({type: TokenType.INT, index: i, value: char + val + char, int: val.charCodeAt(0)});
+            continue;
+        }
+        if (char === '"') {
             let acc = "";
             const sI = i;
             let backslash = false;
@@ -434,22 +472,33 @@ function tokenize(code: string): Token[] {
             throwError(code, {type: 0, index: i, value: " "}, "SyntaxError", "Undefined token '" + char + "'");
             return tokens;
         }
+        const nextAssumption = TokenOtherNextLookup[otherLook];
         let acc = char;
         const sI = i;
+        let intBase = 10;
+        if (otherLook === TokenType.INT && char === "0") {
+            const t2 = IntTokenTypes[code[i + 1]];
+            if (t2) {
+                i++;
+                intBase = t2;
+            }
+        }
         while (true) {
             i++;
             if (i === code.length) {
                 break;
             }
             const c2 = code[i];
-            if (TokenOtherLookup[c2] !== otherLook) {
+            if (!nextAssumption.includes(TokenOtherLookup[c2])) {
                 i--;
                 break;
             }
             acc += c2;
         }
+        if (otherLook === TokenType.INT) {
+            tokens.push({type: TokenType.INT, index: sI, value: acc, int: parseInt(acc, intBase)});
+        } else tokens.push({type: otherLook, index: sI, value: acc});
         const last = tokens[tokens.length - 1];
-        tokens.push({type: otherLook, index: sI, value: acc});
         if (openNot) {
             tokens.push({type: TokenType.PARENTHESES_CLOSE, index: sI, value: ")"});
             openNot = false;
@@ -478,6 +527,7 @@ function group(code: string, tokens: Token[]): (ParentExpression & { deepness: n
     let parent = groups;
     let deepness = 1;
     let maxDeepness = 1;
+    if (tokens.length === 0) throw new Error("Unexpected empty parent expression.");
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
         if (
@@ -492,8 +542,9 @@ function group(code: string, tokens: Token[]): (ParentExpression & { deepness: n
         }
         if (parent.end === token.type) {
             const children = parent.children;
+            const token = parent.token;
             parent = parent.parent;
-            parent.children.push({type: ExpressionTypes.PARENT, children});
+            parent.children.push({type: ExpressionTypes.PARENT, token: token, children});
             deepness--;
             continue;
         }
@@ -501,16 +552,10 @@ function group(code: string, tokens: Token[]): (ParentExpression & { deepness: n
     }
     if (parent !== groups) {
         throwError(code, parent.token, "SyntaxError", "The bracket was never closed.");
-        return {
-            type: ExpressionTypes.PARENT,
-            children: [],
-            deepness: -1,
-            token: {type: TokenType._, index: 0, value: " "}
-        };
     }
     return {
         type: ExpressionTypes.PARENT,
-        token: {type: TokenType.LINE_BREAK, index: 0, value: " "},
+        token: tokens[0],
         children: groups.children,
         deepness: maxDeepness
     };
@@ -589,350 +634,275 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
         functions: useParentScopeVariables && parent ? parent.functions : {},
         statements
     };
-    for (let i = 0; i < groups.children.length; i++) {
-        const group = groups.children[i];
-        if (group.type === TokenType.LINE_BREAK) continue;
-        if (group.type === TokenType.SEMICOLON) continue;
-        if (group.type === TokenType.INT) continue;
-        if (group.type === TokenType.FLOAT) continue;
-        if (group.type === TokenType.STRING) continue;
-        if (group.type === TokenType.WORD) {
-            if (group.value === "break") {
-                const statement: BreakStatement = {
-                    type: ExpressionTypes.BREAK, token: group
-                };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
+    const ASTWordLookup: Record<string, (group: Token) => void> = {
+        "break"(group) {
+            const statement: BreakStatement = {
+                type: ExpressionTypes.BREAK, token: group
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "continue"(group) {
+            const statement: ContinueStatement = {
+                type: ExpressionTypes.CONTINUE, token: group
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "return"(group) {
+            const [value, nI1] = nextUntilSemicolon(groups, i + 1, code, group);
+            i = nI1;
+            const statement: ReturnStatement = {
+                type: ExpressionTypes.RETURN,
+                token: group,
+                value
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "let"(group) {
+            const name = groups.children[++i];
+            if (!name || name.type !== TokenType.WORD) {
+                throwError(code, group, "SyntaxError", "Expected a valid variable name.");
+                return;
             }
-            if (group.value === "continue") {
-                const statement: ContinueStatement = {
-                    type: ExpressionTypes.CONTINUE, token: group
-                };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
+            const equals = groups.children[++i];
+            if (!equals || equals.type === ExpressionTypes.PARENT || equals.type !== TokenType.SET) {
+                throwError(code, {
+                    type: 0,
+                    index: name.index + name.value.length,
+                    value: " "
+                }, "SyntaxError", "Expected '='");
+                return;
             }
-            if (group.value === "return") {
-                const [value, nI1] = nextUntilSemicolon(groups, i + 1, code, group);
-                i = nI1;
-                const statement: ReturnStatement = {
-                    type: ExpressionTypes.RETURN,
-                    token: group,
-                    value
-                };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
+            const [value, nI3] = nextUntilSemicolon(groups, i + 1, code, group);
+            i = nI3;
+            const existing = scopeInfo.variables[name.value];
+            if (existing) {
+                throwError(code, group, "SyntaxError", "Cannot redeclare a variable: '" + name.value + "'.");
+                return;
             }
-            if (group.value === "let" || group.value === "const") {
-                const name = groups.children[++i];
-                if (!name || name.type !== TokenType.WORD) {
-                    throwError(code, group, "SyntaxError", "Expected a valid variable name.");
-                    return scopeInfo;
+            allVariables.push(scopeInfo.variables[name.value] = {
+                type: VariableType.INT,
+                name: name.value,
+                const: group.value === "const",
+                id: ++runtimeId
+            });
+            const statement: DefineIntExpression = {
+                type: ExpressionTypes.DEFINE_INT,
+                token: group,
+                name: <Token>name,
+                value,
+                const: group.value === "const",
+                new: true,
+                extra: null
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "function"(group) {
+            const name = groups.children[++i];
+            if (!name || name.type === ExpressionTypes.PARENT || name.type !== TokenType.WORD) {
+                throwError(code, group, "SyntaxError", "Expected a valid function name.");
+                return;
+            }
+            const argumentList = groups.children[++i];
+            if (!argumentList || argumentList.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected an argument list for the function statement.");
+                return;
+            }
+            const scope = groups.children[++i];
+            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a scope for the function statement.");
+                return;
+            }
+            const vars: VariableHolder[] = [];
+            const varObj: Record<string, VariableHolder> = {};
+            for (let i = 0; i < argumentList.children.length; i += 2) {
+                const argName: AnyExpression = argumentList.children[i];
+                const comma = argumentList.children[i + 1];
+                if ("token" in argName) {
+                    throwError(code, argName, "SyntaxError", "Expected argument of a function to be a valid variable name.");
+                    return;
                 }
-                const equals = groups.children[++i];
-                if (!equals || equals.type === ExpressionTypes.PARENT || equals.type !== TokenType.SET) {
-                    throwError(code, {
-                        type: 0,
-                        index: name.index + name.value.length,
-                        value: " "
-                    }, "SyntaxError", "Expected '='");
-                    return scopeInfo;
+                if (i !== argumentList.children.length - 1 && (!comma || comma.type !== TokenType.COMMA)) {
+                    throwError(code, comma, "SyntaxError", "Expected a comma.");
+                    return;
                 }
-                const [value, nI3] = nextUntilSemicolon(groups, i + 1, code, group);
-                i = nI3;
-                const existing = scopeInfo.variables[name.value];
-                if (existing) {
-                    throwError(code, group, "SyntaxError", "Cannot redeclare a variable: '" + name.value + "'.");
-                    return scopeInfo;
-                }
-                allVariables.push(scopeInfo.variables[name.value] = {
+                const variable = {
                     type: VariableType.INT,
-                    name: name.value,
-                    const: group.value === "const",
+                    name: argName.value,
+                    const: false,
                     id: ++runtimeId
-                });
-                const statement: DefineIntExpression = {
-                    type: ExpressionTypes.DEFINE_INT,
-                    token: group,
-                    name: <Token>name,
-                    value,
-                    const: group.value === "const",
-                    new: true,
-                    extra: null
                 };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
+                allVariables.push(variable);
+                vars.push(variable);
+                if (argName.value in varObj) {
+                    throwError(code, argName, "SyntaxError", "Function's argument names should be unique.");
+                }
+                varObj[argName.value] = variable;
             }
-            if (group.value === "function") {
-                const name = groups.children[++i];
-                if (!name || name.type === ExpressionTypes.PARENT || name.type !== TokenType.WORD) {
-                    throwError(code, group, "SyntaxError", "Expected a valid function name.");
-                    return scopeInfo;
-                }
-                const argumentList = groups.children[++i];
-                if (!argumentList || argumentList.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected an argument list for the function statement.");
-                    return scopeInfo;
-                }
-                const scope = groups.children[++i];
-                if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a scope for the function statement.");
-                    return scopeInfo;
-                }
-                const vars: VariableHolder[] = [];
-                const varObj: Record<string, VariableHolder> = {};
-                for (let i = 0; i < argumentList.children.length; i += 2) {
-                    const argName: AnyExpression = argumentList.children[i];
-                    const comma = argumentList.children[i + 1];
-                    if ("token" in argName) {
-                        throwError(code, argName, "SyntaxError", "Expected argument of a function to be a valid variable name.");
-                        return scopeInfo;
+            const statement: FunctionStatement = {
+                type: ExpressionTypes.FUNCTION,
+                token: group,
+                name,
+                arguments: vars,
+                scope: ast(code, scope, {
+                    parent: scopeInfo,
+                    variables: varObj, functions: {}, statements: [], groups: {
+                        type: ExpressionTypes.PARENT, token: group, children: []
                     }
-                    if (i !== argumentList.children.length - 1 && (!comma || comma.type !== TokenType.COMMA)) {
-                        throwError(code, comma, "SyntaxError", "Expected a comma.");
-                        return scopeInfo;
-                    }
-                    const variable = {
-                        type: VariableType.INT,
-                        name: argName.value,
-                        const: false,
-                        id: ++runtimeId
-                    };
-                    allVariables.push(variable);
-                    vars.push(variable);
-                    if (argName.value in varObj) {
-                        throwError(code, argName, "SyntaxError", "Function's argument names should be unique.");
-                    }
-                    varObj[argName.value] = variable;
-                }
-                const statement: FunctionStatement = {
-                    type: ExpressionTypes.FUNCTION,
-                    token: group,
-                    name,
-                    arguments: vars,
-                    scope: ast(code, scope, {
-                        parent: scopeInfo,
-                        variables: varObj, functions: {}, statements: [], groups: {
-                            type: ExpressionTypes.PARENT, token: group, children: []
-                        }
-                    }, allStatements, allVariables, true)
-                };
-                if (scopeInfo.functions[name.value]) {
-                    throwError(code, group, "SyntaxError", "The function named '" + name.value + "' is already defined in the scope.");
-                }
-                scopeInfo.functions[name.value] = {
-                    name: name.value,
-                    id: ++runtimeId,
-                    definition: statement
-                };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
+                }, allStatements, allVariables, true)
+            };
+            if (scopeInfo.functions[name.value]) {
+                throwError(code, group, "SyntaxError", "The function named '" + name.value + "' is already defined in the scope.");
             }
-            if (group.value === "if") {
-                const requirement = groups.children[++i];
-                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a requirement for the if statement.");
-                    return scopeInfo;
+            scopeInfo.functions[name.value] = {
+                name: name.value,
+                id: ++runtimeId,
+                definition: statement
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "if"(group) {
+            const requirement = groups.children[++i];
+            if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a requirement for the if statement.");
+                return;
+            }
+            if (requirement.children.length === 0) {
+                throwError(code, group, "SyntaxError", "Expected the requirement of the if statement to not be empty.");
+                return;
+            }
+            const scope = groups.children[++i];
+            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a scope for the if statement.");
+                return;
+            }
+            const statement: IfStatement = {
+                type: ExpressionTypes.IF,
+                token: group,
+                if: {
+                    scope: ast(code, scope, scopeInfo, allStatements, allVariables, true),
+                    requirement: requirement.children
+                },
+                else: null
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "else"(group) {
+            const lastStatement = <IfStatement>statements[statements.length - 1];
+            if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
+                throwError(code, group, "SyntaxError", "Unexpected else statement.");
+                return;
+            }
+            const next = groups.children[++i];
+            if (next && next.type === ExpressionTypes.PARENT) {
+                // } else {
+                if (lastStatement.else) {
+                    throwError(code, group, "SyntaxError", "Else statement's bounding if statement already has an else statement.");
+                    return;
                 }
-                if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError", "Expected the requirement of the if statement to not be empty.");
-                    return scopeInfo;
-                }
-                const scope = groups.children[++i];
-                if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a scope for the if statement.");
-                    return scopeInfo;
-                }
-                const statement: IfStatement = {
-                    type: ExpressionTypes.IF,
-                    token: group,
-                    if: {
+                lastStatement.else = ast(code, next, scopeInfo, allStatements, allVariables, true);
+                return;
+            }
+            if (!next || next.type !== TokenType.WORD) {
+                throwError(code, group, "SyntaxError", "Expected 'if'");
+                return;
+            }
+            // } else if() {
+            if (next.value !== "if") {
+                throwError(code, group, "SyntaxError", "Expected the 'if' keyword.");
+                return;
+            }
+            const requirement = groups.children[++i];
+            if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a requirement for the else-if statement.");
+                return;
+            }
+            if (requirement.children.length === 0) {
+                throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
+                return;
+            }
+            const scope = groups.children[++i];
+            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
+                return;
+            }
+            lastStatement.else = {
+                statements: [{
+                    type: ExpressionTypes.IF, token: next, else: null, if: {
                         scope: ast(code, scope, scopeInfo, allStatements, allVariables, true),
                         requirement: requirement.children
-                    },
-                    else: null
-                };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
-            }
-            if (group.value === "else") {
-                const lastStatement = <IfStatement>statements[statements.length - 1];
-                if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
-                    throwError(code, group, "SyntaxError", "Unexpected else statement.");
-                    return scopeInfo;
-                }
-                const next = groups.children[++i];
-                if (next && next.type === ExpressionTypes.PARENT) {
-                    // } else {
-                    if (lastStatement.else) {
-                        throwError(code, group, "SyntaxError", "Else statement's bounding if statement already has an else statement.");
-                        return scopeInfo;
                     }
-                    lastStatement.else = ast(code, next, scopeInfo, allStatements, allVariables, true);
-                    continue;
-                }
-                if (!next || next.type !== TokenType.WORD) {
-                    throwError(code, group, "SyntaxError", "Expected 'if'");
-                    return scopeInfo;
-                }
-                // } else if() {
-                if (next.value !== "if") {
-                    throwError(code, group, "SyntaxError", "Expected the 'if' keyword.");
-                    return scopeInfo;
-                }
-                const requirement = groups.children[++i];
-                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a requirement for the else-if statement.");
-                    return scopeInfo;
-                }
-                if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
-                    return scopeInfo;
-                }
-                const scope = groups.children[++i];
-                if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
-                    return scopeInfo;
-                }
-                lastStatement.else = {
-                    statements: [{
-                        type: ExpressionTypes.IF, token: next, else: null, if: {
-                            scope: ast(code, scope, scopeInfo, allStatements, allVariables, true),
-                            requirement: requirement.children
-                        }
-                    }], groups: scope, parent: scopeInfo, variables: {}, functions: {}
-                };
-                continue;
+                }], groups: scope, parent: scopeInfo, variables: {}, functions: {}
+            };
+        },
+        "elseif"(group) {
+            const lastStatement = <IfStatement>statements[statements.length - 1];
+            if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
+                throwError(code, group, "SyntaxError", "Unexpected else-if statement.");
+                return;
             }
-            if (group.value === "elseif") {
-                const lastStatement = <IfStatement>statements[statements.length - 1];
-                if (!lastStatement || lastStatement.type !== ExpressionTypes.IF) {
-                    throwError(code, group, "SyntaxError", "Unexpected else-if statement.");
-                    return scopeInfo;
-                }
-                const requirement = groups.children[++i];
-                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a requirement for the else-if statement.");
-                    return scopeInfo;
-                }
-                if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
-                    return scopeInfo;
-                }
-                const scope = groups.children[++i];
-                if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
-                    return scopeInfo;
-                }
-                lastStatement.else = {
-                    statements: [{
-                        type: ExpressionTypes.IF, token: group, else: null, if: {
-                            scope: ast(code, scope, scopeInfo, allStatements, allVariables, true),
-                            requirement: requirement.children
-                        }
-                    }], groups: scope, parent: scopeInfo, variables: {}, functions: {}
-                };
-                continue;
+            const requirement = groups.children[++i];
+            if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a requirement for the else-if statement.");
+                return;
             }
-            if (group.value === "loop") {
-                const scope = groups.children[++i];
-                if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a scope for the loop statement.");
-                    return scopeInfo;
-                }
-                const statement: LoopStatement = {
-                    type: ExpressionTypes.LOOP,
-                    token: group,
-                    scope: ast(code, scope, scopeInfo, allStatements, allVariables)
-                };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
+            if (requirement.children.length === 0) {
+                throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
+                return;
             }
-            if (group.value === "while") {
-                const requirement = groups.children[++i];
-                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a requirement for the while statement.");
-                    return scopeInfo;
-                }
-                if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
-                    return scopeInfo;
-                }
-                const scope = groups.children[++i];
-                if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
-                    return scopeInfo;
-                }
-                const scopeAst = ast(code, scope, scopeInfo, allStatements, allVariables);
+            const scope = groups.children[++i];
+            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
+                return;
+            }
+            lastStatement.else = {
+                statements: [{
+                    type: ExpressionTypes.IF, token: group, else: null, if: {
+                        scope: ast(code, scope, scopeInfo, allStatements, allVariables, true),
+                        requirement: requirement.children
+                    }
+                }], groups: scope, parent: scopeInfo, variables: {}, functions: {}
+            };
+        },
+        "loop"(group) {
+            const scope = groups.children[++i];
+            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a scope for the loop statement.");
+                return;
+            }
+            const statement: LoopStatement = {
+                type: ExpressionTypes.LOOP,
+                token: group,
+                scope: ast(code, scope, scopeInfo, allStatements, allVariables)
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "while"(group) {
+            const requirement = groups.children[++i];
+            if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a requirement for the while statement.");
+                return;
+            }
+            if (requirement.children.length === 0) {
+                throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
+                return;
+            }
+            const scope = groups.children[++i];
+            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
+                return;
+            }
+            const scopeAst = ast(code, scope, scopeInfo, allStatements, allVariables);
 
-                scopeAst.statements.splice(0, 0, {
-                    type: ExpressionTypes.IF, token: group, if: {
-                        requirement: requirement.children, scope: {
-                            statements: [
-                                {
-                                    type: ExpressionTypes.BREAK, token: group
-                                }
-                            ], parent: scopeAst, variables: {}, functions: {}, groups: {
-                                type: ExpressionTypes.PARENT, token: group, children: []
-                            }
-                        }
-                    }, else: null
-                });
-                const statement: LoopStatement = {
-                    type: ExpressionTypes.LOOP,
-                    token: group,
-                    scope: scopeAst
-                };
-                allStatements.push(statement);
-                statements.push(statement);
-                continue;
-            }
-            if (group.value === "for") {
-                const requirement = groups.children[++i];
-                if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a requirement for the while statement.");
-                    return scopeInfo;
-                }
-                if (requirement.children.length === 0) {
-                    throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
-                    return scopeInfo;
-                }
-                const scope = groups.children[++i];
-                if (!scope || scope.type !== ExpressionTypes.PARENT) {
-                    throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
-                    return scopeInfo;
-                }
-                const split = splitTokensWithComma(requirement.children, code, TokenType.SEMICOLON);
-                if (split.length !== 3) {
-                    throwError(code, group, "SyntaxError", "Expected one initial statement, one requirement and one step statement for the for-loop statement.");
-                }
-                const initialAst = ast(code, {
-                    type: ExpressionTypes.PARENT,
-                    token: group,
-                    children: [...split[0], {type: TokenType.SEMICOLON, value: ";", index: group.index}]
-                }, scopeInfo, allStatements, allVariables, true);
-                const stepAst = ast(code, {
-                    type: ExpressionTypes.PARENT,
-                    token: group,
-                    children: [...split[2], {type: TokenType.SEMICOLON, value: ";", index: group.index}]
-                }, scopeInfo, allStatements, allVariables);
-                const scopeAst = ast(code, scope, scopeInfo, allStatements, allVariables);
-                allStatements.push(...initialAst.statements);
-                statements.push(...initialAst.statements);
-                scopeAst.statements.splice(0, 0, {
-                    type: ExpressionTypes.IF, token: group, if: {
-                        requirement: [...split[1]], scope: {
-                            statements: [], parent: scopeAst, variables: {}, functions: {}, groups: {
-                                type: ExpressionTypes.PARENT, token: group, children: []
-                            }
-                        }
-                    }, else: {
+            scopeAst.statements.splice(0, 0, {
+                type: ExpressionTypes.IF, token: group, if: {
+                    requirement: requirement.children, scope: {
                         statements: [
                             {
                                 type: ExpressionTypes.BREAK, token: group
@@ -941,15 +911,88 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                             type: ExpressionTypes.PARENT, token: group, children: []
                         }
                     }
-                });
-                scopeAst.statements.push(...stepAst.statements);
-                const statement: LoopStatement = {
-                    type: ExpressionTypes.LOOP,
-                    token: group,
-                    scope: scopeAst
-                };
-                allStatements.push(statement);
-                statements.push(statement);
+                }, else: null
+            });
+            const statement: LoopStatement = {
+                type: ExpressionTypes.LOOP,
+                token: group,
+                scope: scopeAst
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        },
+        "for"(group) {
+            const requirement = groups.children[++i];
+            if (!requirement || requirement.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a requirement for the while statement.");
+                return;
+            }
+            if (requirement.children.length === 0) {
+                throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
+                return;
+            }
+            const scope = groups.children[++i];
+            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+                throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
+                return;
+            }
+            const split = splitTokensWithComma(requirement.children, code, TokenType.SEMICOLON);
+            if (split.length !== 3) {
+                throwError(code, group, "SyntaxError", "Expected one initial statement, one requirement and one step statement for the for-loop statement.");
+            }
+            const initialAst = ast(code, {
+                type: ExpressionTypes.PARENT,
+                token: group,
+                children: [...split[0], {type: TokenType.SEMICOLON, value: ";", index: group.index}]
+            }, scopeInfo, allStatements, allVariables, true);
+            const stepAst = ast(code, {
+                type: ExpressionTypes.PARENT,
+                token: group,
+                children: [...split[2], {type: TokenType.SEMICOLON, value: ";", index: group.index}]
+            }, scopeInfo, allStatements, allVariables);
+            const scopeAst = ast(code, scope, scopeInfo, allStatements, allVariables);
+            allStatements.push(...initialAst.statements);
+            statements.push(...initialAst.statements);
+            scopeAst.statements.splice(0, 0, {
+                type: ExpressionTypes.IF, token: group, if: {
+                    requirement: [...split[1]], scope: {
+                        statements: [], parent: scopeAst, variables: {}, functions: {}, groups: {
+                            type: ExpressionTypes.PARENT, token: group, children: []
+                        }
+                    }
+                }, else: {
+                    statements: [
+                        {
+                            type: ExpressionTypes.BREAK, token: group
+                        }
+                    ], parent: scopeAst, variables: {}, functions: {}, groups: {
+                        type: ExpressionTypes.PARENT, token: group, children: []
+                    }
+                }
+            });
+            scopeAst.statements.push(...stepAst.statements);
+            const statement: LoopStatement = {
+                type: ExpressionTypes.LOOP,
+                token: group,
+                scope: scopeAst
+            };
+            allStatements.push(statement);
+            statements.push(statement);
+        }
+    };
+    ASTWordLookup.const = ASTWordLookup.let;
+    let i = 0;
+    for (; i < groups.children.length; i++) {
+        const group = groups.children[i];
+        if (group.type === TokenType.LINE_BREAK) continue;
+        if (group.type === TokenType.SEMICOLON) continue;
+        if (group.type === TokenType.INT) continue;
+        if (group.type === TokenType.FLOAT) continue;
+        if (group.type === TokenType.STRING) continue;
+        if (group.type === TokenType.WORD) {
+            const look = ASTWordLookup[group.value];
+            if (look) {
+                look(group);
                 continue;
             }
             const next = groups.children[++i];
@@ -1105,7 +1148,7 @@ function assembleExpression(
             );
             lastSection.push(`mov ecx, 0`);
         },
-        printS(statement: CallExpression) {
+        i_print(statement: CallExpression) {
             for (let i = 0; i < statement.arguments.length; i++) {
                 const arg = statement.arguments[i];
                 if (arg.length === 1 && arg[0].type === TokenType.STRING) {
@@ -1120,11 +1163,20 @@ function assembleExpression(
                     const filtered = filterExpressionAssembly(code, arg);
                     lastSection = assembleExpression(code, filtered, strings, scope, currentDeepness, lastSection, sections);
                     lastSection.push(
-                        // todo
+                        `mov eax, 4`,
+                        `mov ebx, 1`,
+                        `mov ecx, _temp${currentDeepness}`,
+                        `mov edx, 1`,
+                        `int 0x80`
                     );
                 }
             }
             lastSection.push(`mov ecx, 0`);
+        },
+        printf(statement: CallExpression) {
+            const format = statement.arguments[0];
+            if (!format) throwError(code, statement, "SyntaxError", "Expected a string as the first argument to the function printf().");
+
         }
     };
 
@@ -1162,7 +1214,7 @@ function assembleExpression(
         );
     } else if (first.type === TokenType.INT) {
         lastSection.push(
-            `mov eax, ${first.value}`,
+            `mov eax, ${first.int}`,
             `mov [_temp${currentDeepness}], eax`
         );
     } else if (first.type === TokenType.WORD) {
@@ -1201,7 +1253,7 @@ function assembleExpression(
                 throwError(code, expression, "SyntaxError", "Expected an integer or a variable.");
             }
             if (expression.type === TokenType.INT) {
-                el = expression.value;
+                el = expression.int.toString();
             } else if (expression.type === TokenType.WORD) {
                 const variable = findVariable(scope, expression.value);
                 if (!variable) {
@@ -1244,6 +1296,14 @@ function assembleExpression(
 
     const OperatorLookup: Record<number, (expression: Token | CallExpression | RecursiveTokens) => void> = {
         [TokenType.PLUS](expression) {
+            if ("value" in expression && expression.value === "1") {
+                lastSection.push(
+                    `mov eax, [_temp${currentDeepness}]`,
+                    `inc eax`,
+                    `mov [_temp${currentDeepness}], eax`
+                );
+                return;
+            }
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1252,6 +1312,14 @@ function assembleExpression(
             );
         },
         [TokenType.MINUS](expression) {
+            if ("value" in expression && expression.value === "1") {
+                lastSection.push(
+                    `mov eax, [_temp${currentDeepness}]`,
+                    `dec eax`,
+                    `mov [_temp${currentDeepness}], eax`
+                );
+                return;
+            }
             const el = normalOperatorLookup(expression);
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
@@ -1273,7 +1341,8 @@ function assembleExpression(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], eax`
+                `mov [_temp${currentDeepness}], eax`,
+                `xor edx, edx`
             );
         },
         [TokenType.MODULO](expression) {
@@ -1282,7 +1351,8 @@ function assembleExpression(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], edx`
+                `mov [_temp${currentDeepness}], edx`,
+                `xor edx, edx`
             );
         },
         [TokenType.EQUALS]: compareOperatorLookup("je", "1", "0"),
@@ -1544,6 +1614,13 @@ function cleanJunkAssembly(assembly: string) {
 
 function compile(code: string) {
     const tokens = tokenize(code);
+    if (tokens.length === 0) {
+        return "global _start\n" +
+            "_start:\n" +
+            "   mov eax, 1\n" +
+            "   mov ebx, 0\n" +
+            "   int 0x80\n";
+    }
     const groups = group(code, tokens);
     const deepness = groups.deepness;
     const allStatements: Statement[] = [];
@@ -1551,7 +1628,12 @@ function compile(code: string) {
     const scope = ast(code, groups, null, allStatements, allVariables);
     const strings = getStrings(tokens);
     const namedSections = {_start: []};
-    assemble(code, strings, scope, tokens, allStatements, deepness, 0, namedSections, namedSections._start, null, false);
+    const lastSection = assemble(code, strings, scope, tokens, allStatements, deepness, 0, namedSections, namedSections._start, null, false);
+    lastSection.push(
+        `mov eax, 1`,
+        `mov ebx, 0`,
+        `int 0x80`
+    );
     const string = assemblyToString(namedSections, strings, allVariables, deepness);
     return cleanJunkAssembly(string);
 }
