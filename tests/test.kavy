@@ -1,28 +1,11 @@
-/*
-function printOneDigit(num) {
-    i_print(num + 48);
-}
-
 function printDigitsReverse(num) {
     loop {
         const mod = num % 10;
-        printOneDigit(mod);
-        printS(" digit.");
-        exit(num / 10);
-        if (num == 0) { return 0; }
+        i_print(mod + 48);
+        i_print(" digit ");
         num = num / 10;
-        exit(num);
+        if (num == 0) return 0;
     }
 }
 
 printDigitsReverse(10);
-
-
-*/
-function test(num){
-    let mod = num % 10;
-    i_print(" ");
-    exit(num / 10);
-}
-
-test(53);

@@ -424,7 +424,11 @@ function tokenize(code: string): Token[] {
             continue;
         }
         if (char === "'") {
-            if (code[i + 2] !== "'") throwError(code, {type: 0, index: i, value: "  "}, "SyntaxError", "Expected a quote(') after the character ")
+            if (code[i + 2] !== "'") throwError(code, {
+                type: 0,
+                index: i,
+                value: "  "
+            }, "SyntaxError", "Expected a quote(') after the character ")
             const val = code[i + 1];
             i += 2;
             tokens.push({type: TokenType.INT, index: i, value: char + val + char, int: val.charCodeAt(0)});
@@ -711,10 +715,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                 throwError(code, group, "SyntaxError", "Expected an argument list for the function statement.");
                 return;
             }
-            const scope = groups.children[++i];
-            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+            let scope = groups.children[++i];
+            if (!scope) {
                 throwError(code, group, "SyntaxError", "Expected a scope for the function statement.");
                 return;
+            }
+            if (scope.type !== ExpressionTypes.PARENT) {
+                const [value, nI1] = nextUntilSemicolon(groups, i, code, group);
+                i = nI1;
+                const index = "token" in value[0] ? value[0].token.index : value[0].index;
+                value.push({type: TokenType.SEMICOLON, index, value: ";"});
+                scope = {
+                    type: ExpressionTypes.PARENT,
+                    token: {type: 0, index, value: " "},
+                    children: value
+                };
             }
             const vars: VariableHolder[] = [];
             const varObj: Record<string, VariableHolder> = {};
@@ -775,10 +790,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                 throwError(code, group, "SyntaxError", "Expected the requirement of the if statement to not be empty.");
                 return;
             }
-            const scope = groups.children[++i];
-            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+            let scope = groups.children[++i];
+            if (!scope) {
                 throwError(code, group, "SyntaxError", "Expected a scope for the if statement.");
                 return;
+            }
+            if (scope.type !== ExpressionTypes.PARENT) {
+                const [value, nI1] = nextUntilSemicolon(groups, i, code, group);
+                i = nI1;
+                const index = "token" in value[0] ? value[0].token.index : value[0].index;
+                value.push({type: TokenType.SEMICOLON, index, value: ";"});
+                scope = {
+                    type: ExpressionTypes.PARENT,
+                    token: {type: 0, index, value: " "},
+                    children: value
+                };
             }
             const statement: IfStatement = {
                 type: ExpressionTypes.IF,
@@ -826,10 +852,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                 throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
                 return;
             }
-            const scope = groups.children[++i];
-            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+            let scope = groups.children[++i];
+            if (!scope) {
                 throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
                 return;
+            }
+            if (scope.type !== ExpressionTypes.PARENT) {
+                const [value, nI1] = nextUntilSemicolon(groups, i, code, group);
+                i = nI1;
+                const index = "token" in value[0] ? value[0].token.index : value[0].index;
+                value.push({type: TokenType.SEMICOLON, index, value: ";"});
+                scope = {
+                    type: ExpressionTypes.PARENT,
+                    token: {type: 0, index, value: " "},
+                    children: value
+                };
             }
             lastStatement.else = {
                 statements: [{
@@ -855,10 +892,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                 throwError(code, group, "SyntaxError", "Expected the requirement of the else-if statement to not be empty.");
                 return;
             }
-            const scope = groups.children[++i];
-            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+            let scope = groups.children[++i];
+            if (!scope) {
                 throwError(code, group, "SyntaxError", "Expected a scope for the else-if statement.");
                 return;
+            }
+            if (scope.type !== ExpressionTypes.PARENT) {
+                const [value, nI1] = nextUntilSemicolon(groups, i, code, group);
+                i = nI1;
+                const index = "token" in value[0] ? value[0].token.index : value[0].index;
+                value.push({type: TokenType.SEMICOLON, index, value: ";"});
+                scope = {
+                    type: ExpressionTypes.PARENT,
+                    token: {type: 0, index, value: " "},
+                    children: value
+                };
             }
             lastStatement.else = {
                 statements: [{
@@ -870,10 +918,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
             };
         },
         "loop"(group) {
-            const scope = groups.children[++i];
-            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+            let scope = groups.children[++i];
+            if (!scope) {
                 throwError(code, group, "SyntaxError", "Expected a scope for the loop statement.");
                 return;
+            }
+            if (scope.type !== ExpressionTypes.PARENT) {
+                const [value, nI1] = nextUntilSemicolon(groups, i, code, group);
+                i = nI1;
+                const index = "token" in value[0] ? value[0].token.index : value[0].index;
+                value.push({type: TokenType.SEMICOLON, index, value: ";"});
+                scope = {
+                    type: ExpressionTypes.PARENT,
+                    token: {type: 0, index, value: " "},
+                    children: value
+                };
             }
             const statement: LoopStatement = {
                 type: ExpressionTypes.LOOP,
@@ -893,10 +952,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                 throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
                 return;
             }
-            const scope = groups.children[++i];
-            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+            let scope = groups.children[++i];
+            if (!scope) {
                 throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
                 return;
+            }
+            if (scope.type !== ExpressionTypes.PARENT) {
+                const [value, nI1] = nextUntilSemicolon(groups, i, code, group);
+                i = nI1;
+                const index = "token" in value[0] ? value[0].token.index : value[0].index;
+                value.push({type: TokenType.SEMICOLON, index, value: ";"});
+                scope = {
+                    type: ExpressionTypes.PARENT,
+                    token: {type: 0, index, value: " "},
+                    children: value
+                };
             }
             const scopeAst = ast(code, scope, scopeInfo, allStatements, allVariables);
 
@@ -931,10 +1001,21 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                 throwError(code, group, "SyntaxError", "Expected the requirement of the while statement to not be empty.");
                 return;
             }
-            const scope = groups.children[++i];
-            if (!scope || scope.type !== ExpressionTypes.PARENT) {
+            let scope = groups.children[++i];
+            if (!scope) {
                 throwError(code, group, "SyntaxError", "Expected a scope for the while statement.");
                 return;
+            }
+            if (scope.type !== ExpressionTypes.PARENT) {
+                const [value, nI1] = nextUntilSemicolon(groups, i, code, group);
+                i = nI1;
+                const index = "token" in value[0] ? value[0].token.index : value[0].index;
+                value.push({type: TokenType.SEMICOLON, index, value: ";"});
+                scope = {
+                    type: ExpressionTypes.PARENT,
+                    token: {type: 0, index, value: " "},
+                    children: value
+                };
             }
             const split = splitTokensWithComma(requirement.children, code, TokenType.SEMICOLON);
             if (split.length !== 3) {
@@ -1157,7 +1238,8 @@ function assembleExpression(
                         `mov ebx, 1`,
                         `mov ecx, _${strings[arg[0].value]}`,
                         `mov edx, ${arg[0].value.length - 2}`,
-                        `int 0x80`
+                        `int 0x80`,
+                        `xor edx, edx`
                     );
                 } else {
                     const filtered = filterExpressionAssembly(code, arg);
@@ -1167,7 +1249,8 @@ function assembleExpression(
                         `mov ebx, 1`,
                         `mov ecx, _temp${currentDeepness}`,
                         `mov edx, 1`,
-                        `int 0x80`
+                        `int 0x80`,
+                        `xor edx, edx`
                     );
                 }
             }
@@ -1340,9 +1423,9 @@ function assembleExpression(
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
-                `xor edx, edx`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], eax`
+                `mov [_temp${currentDeepness}], eax`,
+                `xor edx, edx`
             );
         },
         [TokenType.MODULO](expression) {
@@ -1350,9 +1433,9 @@ function assembleExpression(
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
-                `xor edx, edx`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], edx`
+                `mov [_temp${currentDeepness}], edx`,
+                `xor edx, edx`
             );
         },
         [TokenType.EQUALS]: compareOperatorLookup("je", "1", "0"),
