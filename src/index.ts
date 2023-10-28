@@ -44,6 +44,7 @@ enum TokenType {
     SET_MODULO,
     EQUALS,
     NOT_EQUALS,
+    COLON,
 }
 
 enum ExpressionTypes {
@@ -222,6 +223,12 @@ type ScopeInfo = {
     statements: Statement[]
 };
 
+type Macro = {
+    name: string,
+    value: string,
+    tokens: Token[]
+};
+
 let runtimeId = 0;
 
 const TokenLookup: Record<string, TokenType> = {
@@ -248,6 +255,7 @@ const TokenLookup: Record<string, TokenType> = {
     "\r": TokenType.LINE_BREAK,
     ";": TokenType.SEMICOLON,
     ",": TokenType.COMMA,
+    ":": TokenType.COLON,
 };
 
 const EqualsTokenLookup: Record<number, TokenType> = {
@@ -330,12 +338,53 @@ const IntTokenTypes = {
     x: 16
 };
 
+const Whitespaces = [" ", "\n", "\r", "\t"];
+
 function tokenize(code: string): Token[] {
     const tokens: Token[] = [];
     let openNot = false;
+    const macros: Record<string, Macro> = {};
     for (let i = 0; i < code.length; i++) {
         const char = code[i];
         if (TokenizerIgnores.includes(char)) continue;
+        if (char === "#") {
+            const macro: Macro = {name: "", value: "", tokens: []};
+            while (true) {
+                i++;
+                if (i === code.length) {
+                    i--;
+                    break;
+                }
+                const c2 = code[i];
+                if (Whitespaces.includes(c2)) {
+                    break;
+                }
+                macro.name += c2;
+            }
+            if (macros[macro.name]) throwError(code, {type: 0, index: i - macro.name.length - 1, value: "#" + macro.name}, "SyntaxError", "Cannot redeclare a macro.");
+            let backslash = false;
+            let svI = i;
+            while (true) {
+                i++;
+                if (i === code.length) {
+                    break;
+                }
+                const c2 = code[i];
+                if (c2 === "\r") continue;
+                if (c2 === "\n") {
+                    if (!backslash) break;
+                    macro.value = macro.value.slice(0, -1);
+                    continue;
+                }
+                backslash = c2 === "\\";
+                macro.value += c2;
+            }
+            macro.tokens = tokenize(macro.value);
+            if (macro.tokens.length === 0) throwError(code, {type: 0, index: svI, value: " "}, "SyntaxError", "Expected a value for the macro.");
+            macro.tokens.forEach(i => i.index += svI + 1);
+            macros[macro.name] = macro;
+            continue;
+        }
         if (char === "/" && code[i + 1] === "/") {
             while (true) {
                 i++;
@@ -501,7 +550,18 @@ function tokenize(code: string): Token[] {
         }
         if (otherLook === TokenType.INT) {
             tokens.push({type: TokenType.INT, index: sI, value: acc, int: parseInt(acc, intBase)});
-        } else tokens.push({type: otherLook, index: sI, value: acc});
+        } else if (otherLook === TokenType.WORD) {
+            const macro = macros[acc];
+            if (macro) {
+                if (macro.tokens.length > 1) tokens.push(
+                    {type: TokenType.PARENTHESES_OPEN, index: sI, value: "("},
+                    ...macro.tokens,
+                    {type: TokenType.PARENTHESES_CLOSE, index: sI, value: ")"},
+                ); else tokens.push(macro.tokens[0]);
+            } else {
+                tokens.push({type: otherLook, index: sI, value: acc});
+            }
+        } else throwError(code, {type: 0, index: sI, value: acc}, "SyntaxError", "Unexpected literal.");
         const last = tokens[tokens.length - 1];
         if (openNot) {
             tokens.push({type: TokenType.PARENTHESES_CLOSE, index: sI, value: ")"});
@@ -671,7 +731,7 @@ function ast(code: string, groups: ParentExpression, parent: ScopeInfo | null, a
                 return;
             }
             const equals = groups.children[++i];
-            if (!equals || equals.type === ExpressionTypes.PARENT || equals.type !== TokenType.SET) {
+            if (!equals || equals.type !== TokenType.SET) {
                 throwError(code, {
                     type: 0,
                     index: name.index + name.value.length,
@@ -1238,8 +1298,7 @@ function assembleExpression(
                         `mov ebx, 1`,
                         `mov ecx, _${strings[arg[0].value]}`,
                         `mov edx, ${arg[0].value.length - 2}`,
-                        `int 0x80`,
-                        `xor edx, edx`
+                        `int 0x80`
                     );
                 } else {
                     const filtered = filterExpressionAssembly(code, arg);
@@ -1249,8 +1308,7 @@ function assembleExpression(
                         `mov ebx, 1`,
                         `mov ecx, _temp${currentDeepness}`,
                         `mov edx, 1`,
-                        `int 0x80`,
-                        `xor edx, edx`
+                        `int 0x80`
                     );
                 }
             }
@@ -1423,9 +1481,9 @@ function assembleExpression(
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
+                `xor edx, edx`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], eax`,
-                `xor edx, edx`
+                `mov [_temp${currentDeepness}], eax`
             );
         },
         [TokenType.MODULO](expression) {
@@ -1433,9 +1491,9 @@ function assembleExpression(
             lastSection.push(
                 `mov eax, [_temp${currentDeepness}]`,
                 `mov ecx, ${el}`,
+                `xor edx, edx`,
                 `div ecx`,
-                `mov [_temp${currentDeepness}], edx`,
-                `xor edx, edx`
+                `mov [_temp${currentDeepness}], edx`
             );
         },
         [TokenType.EQUALS]: compareOperatorLookup("je", "1", "0"),
@@ -1668,15 +1726,22 @@ function assemblyToString(
         sectionData.push(`_temp${i} dd 0`);
     }
     const named = [];
+    let bss = [];
     const namedKeys = Object.keys(namedSections);
     for (let i = 0; i < namedKeys.length; i++) {
         const k = namedKeys[i];
+        if (k === "_bss_") {
+            bss.push(`section .bss`);
+            bss = namedSections._bss_.map(i => "    " + i);
+            continue;
+        }
         named.push(
             `${k}:`,
             ...namedSections[k].map(i => "    " + i)
         )
     }
     return [
+        ...bss,
         `section .data`,
         ...sectionData.map(i => "    " + i),
         `global _start`,

@@ -1,4 +1,4 @@
-function printDigitsReverse(num) {
+/*function printDigitsReverse(num) {
     loop {
         const mod = num % 10;
         i_print(mod + 48);
@@ -8,4 +8,10 @@ function printDigitsReverse(num) {
     }
 }
 
-printDigitsReverse(10);
+printDigitsReverse(10);*/
+
+#hi "text\n"
+
+i_print(hi);
+i_print(hi);
+i_print(hi);
